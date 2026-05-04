@@ -6,7 +6,9 @@
   <title>Three posts. One beat. — social carousel</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
   <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" rel="stylesheet" />
   <style>
     :root {
       --stage: #0a0a0a;
@@ -14,6 +16,7 @@
       --paper: #f4ede0;
       --serif: 'Instrument Serif', 'Iowan Old Style', Georgia, serif;
       --mono: 'IBM Plex Mono', ui-monospace, monospace;
+      --hangul: 'Pretendard', 'Pretendard Variable', -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
     }
     * { box-sizing: border-box; }
     body {
@@ -23,7 +26,7 @@
         radial-gradient(ellipse 80% 50% at 50% -10%, rgba(255,255,255,0.04), transparent 70%),
         var(--stage);
       color: #f4ede0;
-      font: 14px/1.5 -apple-system, system-ui, sans-serif;
+      font: 14px/1.5 var(--hangul);
     }
 
     .stage {
@@ -39,8 +42,8 @@
     .row { display: flex; gap: 22px; justify-content: center; align-items: stretch; flex-wrap: wrap; }
 
     .card {
-      width: clamp(280px, 30vw, 380px);
-      aspect-ratio: 1 / 1;
+      width: clamp(260px, 28vw, 360px);
+      aspect-ratio: 4 / 5;  /* 1080×1350 — Instagram 카드뉴스 standard */
       border-radius: 14px;
       border: 1px solid rgba(255,255,255,0.06);
       box-shadow: 0 30px 60px rgba(0,0,0,0.45);
@@ -60,8 +63,8 @@
     .card .brand .dot { width: 5px; height: 5px; background: var(--paper); border-radius: 50%; opacity: 0.9; }
     .card .index { font: 11px/1.4 var(--mono); color: rgba(255,255,255,0.85); letter-spacing: 0.16em; text-align: right; padding: 6px 10px; background: rgba(0,0,0,0.30); backdrop-filter: blur(4px); border-radius: 4px; }
 
-    .card .lockup { position: absolute; left: 22px; right: 22px; bottom: 78px; }
-    .card .lockup h2 { margin: 0; font: 700 60px/1 var(--serif); letter-spacing: -0.005em; color: #ffffff; }
+    .card .lockup { position: absolute; left: 22px; right: 22px; bottom: 96px; }
+    .card .lockup h2 { margin: 0; font: 700 64px/1 var(--serif); letter-spacing: -0.005em; color: #ffffff; }
     .card .lockup h2 em { font-style: italic; }
     .card .lockup h2 .accent { font-style: italic; }
 
@@ -152,8 +155,8 @@
 
     @media (max-width: 1180px) {
       .row { flex-direction: column; align-items: center; }
-      .card { width: min(96vw, 480px); }
-      .card .lockup h2 { font-size: 56px; }
+      .card { width: min(86vw, 430px); }
+      .card .lockup h2 { font-size: 60px; }
     }
   </style>
 </head>
@@ -162,7 +165,7 @@
     <div class="stage-head">
       <div>
         <h1>Three posts<span class="dot">.</span> One <em>beat</em><span class="dot">.</span></h1>
-        <p class="lede">1080×1080 · cinematic video loops · minimal type. Drop into Instagram, LinkedIn, or X — each post stands on its own or runs as a three-part series.</p>
+        <p class="lede">1080×1350 · 카드뉴스 4:5 · cinematic video loops · minimal type. Drop into Instagram, LinkedIn, or X — each post stands on its own or runs as a three-part series.</p>
       </div>
       <span class="badge">SERIES · 01 → 03</span>
     </div>
