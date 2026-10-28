@@ -18,13 +18,15 @@ import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .. import storage
 from ..env_check import format_report, run_checks
 from ..llm import load_key, masked, save_key
+from .. import drive as drive_api
+from .. import secrets as secret_store
 from ..reveal import reveal
 from .events import EventBroker, sse
 from .jobs import MANUAL_GATES, STATUS_LABELS, JobStore, TransitionError
@@ -50,6 +52,15 @@ class JobOptions(BaseModel):
     language: str = "ko"
     #: 한 영상에서 뽑을 숏폼 개수. 0 이면 통째로 자막만 단다.
     shortsCount: int = 0
+
+
+class DriveIn(BaseModel):
+    """드라이브 연결에 필요한 값. 폴더는 주소를 통째로 붙여도 된다."""
+
+    clientId: str = ""
+    clientSecret: str = ""
+    folder: str = ""
+    full: bool = False
 
 
 class KeyIn(BaseModel):
@@ -120,6 +131,7 @@ def create_app(workspace_path: str | Path | None = None,
                 "scripts": str(workspace.scripts),
             },
             "apiKey": masked(load_key(workspace)),
+            "drive": drive_api.settings(workspace),
             "counts": store.counts(),
             "labels": STATUS_LABELS,
             "manualGates": sorted(MANUAL_GATES),
@@ -135,6 +147,77 @@ def create_app(workspace_path: str | Path | None = None,
         """
         save_key(workspace, body.key)
         return {"apiKey": masked(load_key(workspace))}
+
+    @app.post("/api/drive/settings")
+    def drive_settings(body: DriveIn) -> dict:
+        """드라이브 설정 저장. 비밀값은 비워 보내면 **그대로 둔다**.
+
+        화면에는 가린 형태만 보이므로, 사용자가 폴더만 바꾸려고 저장을
+        누르면 빈 비밀값이 올라온다. 그걸 그대로 쓰면 연결이 끊긴다.
+        """
+        values = {}
+        if body.clientId.strip():
+            values["google_client_id"] = body.clientId
+        if body.clientSecret.strip():
+            values["google_client_secret"] = body.clientSecret
+        values["drive_folder_id"] = drive_api.folder_id_from(body.folder)
+        values["drive_full_scope"] = "1" if body.full else ""
+        secret_store.put(workspace, **values)
+        return drive_api.settings(workspace)
+
+    @app.get("/api/drive/connect")
+    def drive_connect(request: Request) -> dict:
+        """구글 허락 페이지 주소. 돌아올 곳은 **이 대시보드** 자신이다."""
+        client_id = secret_store.get(workspace, "google_client_id")
+        if not client_id:
+            raise HTTPException(400, "클라이언트 ID 를 먼저 저장하세요")
+        redirect = str(request.base_url).rstrip("/") + "/api/drive/callback"
+        full = secret_store.get(workspace, "drive_full_scope") == "1"
+        return {"url": drive_api.authorize_url(client_id, redirect, full)}
+
+    @app.get("/api/drive/callback")
+    def drive_callback(request: Request, code: str = "", error: str = ""):
+        """구글이 보내 주는 자리. 받은 코드를 토큰으로 바꿔 저장한다."""
+        if error or not code:
+            return HTMLResponse(f"<h3>연결하지 못했습니다</h3><p>{error or '코드가 없습니다'}</p>")
+        redirect = str(request.base_url).rstrip("/") + "/api/drive/callback"
+        try:
+            token = drive_api.exchange_code(
+                secret_store.get(workspace, "google_client_id"),
+                secret_store.get(workspace, "google_client_secret"),
+                code, redirect,
+            )
+        except drive_api.DriveError as exc:
+            return HTMLResponse(f"<h3>연결하지 못했습니다</h3><p>{exc}</p>")
+        secret_store.put(workspace, google_refresh_token=token)
+        return HTMLResponse(
+            "<h3>드라이브가 연결됐습니다</h3><p>이 창을 닫고 대시보드로 돌아가세요.</p>"
+        )
+
+    @app.post("/api/jobs/{job_id}/send")
+    def send_to_drive(job_id: str) -> dict:
+        """검수 완료된 작업의 결과를 드라이브로 보낸다."""
+        job = store.get(job_id)
+        if job is None:
+            raise HTTPException(404, "그런 작업이 없습니다")
+
+        summary = job.result.get("summary") or {}
+        sent = summary.get("preview") or job.source
+        _transition(job_id, "uploading", "드라이브로 보내는 중")
+        try:
+            result = drive_api.send(workspace, Path(sent))
+        except drive_api.DriveError as exc:
+            # 실패를 '전송 중' 으로 남겨 두면 끝난 줄 알고 기다리게 된다.
+            try:
+                store.transition(job_id, "failed", error=str(exc))
+            except TransitionError:
+                pass
+            broker.publish("job", {"job": store.get(job_id).to_dict()})
+            raise HTTPException(500, str(exc))
+
+        link = result.get("webViewLink", "")
+        _transition(job_id, "uploaded", f"드라이브로 보냄 {link}".strip())
+        return {"link": link, "id": result.get("id", "")}
 
     @app.post("/api/reveal/{name}")
     def reveal_folder(name: str) -> dict:

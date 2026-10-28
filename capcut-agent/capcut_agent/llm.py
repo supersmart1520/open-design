@@ -15,11 +15,11 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+from . import secrets
 from .highlight import Candidate, snap_to_words
 from .transcribe import Transcript
 
@@ -31,58 +31,22 @@ DEFAULT_MODEL = "claude-opus-5-5"
 MAX_TOKENS = 8000
 TIMEOUT = 180.0
 
-#: 키를 두는 곳. 작업 저장소 안에 두고 주인만 읽게 한다.
-SECRETS_NAME = "credentials.json"
 
 
 class LLMUnavailable(RuntimeError):
     """모델을 쓸 수 없다. 키가 없거나, 인터넷이 끊겼거나, 거절당했다."""
 
 
-def secrets_path(workspace) -> Path:
-    return Path(workspace.home) / SECRETS_NAME
-
-
 def load_key(workspace) -> str:
-    """API 키. 환경변수가 우선이고, 없으면 저장소의 파일에서 읽는다."""
-    from_env = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-    if from_env:
-        return from_env
-    path = secrets_path(workspace)
-    if not path.is_file():
-        return ""
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    return str(raw.get("anthropic_api_key", "")).strip()
+    return secrets.get(workspace, "anthropic_api_key")
 
 
 def save_key(workspace, key: str) -> Path:
-    """키를 저장한다. 주인만 읽을 수 있게 권한을 좁힌다."""
-    path = secrets_path(workspace)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    raw = {}
-    if path.is_file():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-    raw["anthropic_api_key"] = key.strip()
-    path.write_text(json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8")
-    try:
-        path.chmod(0o600)
-    except OSError:
-        pass  # 권한을 못 좁혀도 저장은 됐다.
-    return path
+    return secrets.put(workspace, anthropic_api_key=key)
 
 
 def masked(key: str) -> str:
-    """화면에 보여줄 형태. 키 전체를 다시 내보내지 않는다."""
-    key = key.strip()
-    if not key:
-        return ""
-    return f"{key[:7]}…{key[-4:]}" if len(key) > 14 else "…"
+    return secrets.masked(key)
 
 
 def numbered_script(transcript: Transcript) -> str:

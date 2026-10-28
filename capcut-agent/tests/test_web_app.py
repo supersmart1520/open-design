@@ -284,3 +284,97 @@ def test_key_can_be_cleared(client, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     client.post("/api/settings/key", json={"key": "sk-ant-xxxxxxxxxxxxxxx"})
     assert client.post("/api/settings/key", json={"key": ""}).json()["apiKey"] == ""
+
+
+# --- 드라이브 -----------------------------------------------------------------
+
+
+def _no_google_env(monkeypatch):
+    for name in ("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_blank_secret_does_not_wipe_the_connection(client, monkeypatch):
+    """폴더만 바꾸려다 연결이 끊기면 안 된다.
+
+    화면에는 가린 값만 보이므로, 저장을 누르면 빈 비밀값이 올라온다.
+    그걸 그대로 쓰면 다음 업로드가 조용히 실패한다.
+    """
+    _no_google_env(monkeypatch)
+    from capcut_agent import secrets
+
+    client.post("/api/drive/settings", json={
+        "clientId": "아이디.apps.googleusercontent.com",
+        "clientSecret": "GOCSPX-비밀",
+        "folder": "https://drive.google.com/drive/folders/AAA111bbb2",
+    })
+    assert secrets.get(client.workspace, "google_client_secret") == "GOCSPX-비밀"
+
+    client.post("/api/drive/settings", json={"folder": "BBB222ccc3"})
+
+    assert secrets.get(client.workspace, "google_client_secret") == "GOCSPX-비밀"
+    assert secrets.get(client.workspace, "drive_folder_id") == "BBB222ccc3"
+
+
+def test_folder_link_is_reduced_to_an_id(client, monkeypatch):
+    _no_google_env(monkeypatch)
+    from capcut_agent import secrets
+
+    client.post("/api/drive/settings", json={
+        "clientId": "x", "folder": "https://drive.google.com/drive/folders/ZZZ999yyy8?hl=ko",
+    })
+    assert secrets.get(client.workspace, "drive_folder_id") == "ZZZ999yyy8"
+
+
+def test_connect_needs_a_client_id_first(client, monkeypatch):
+    _no_google_env(monkeypatch)
+    assert client.get("/api/drive/connect").status_code == 400
+
+
+def test_connect_returns_to_this_dashboard(client, monkeypatch):
+    _no_google_env(monkeypatch)
+    client.post("/api/drive/settings", json={"clientId": "아이디", "folder": ""})
+
+    url = client.get("/api/drive/connect").json()["url"]
+
+    assert "accounts.google.com" in url
+    assert "api%2Fdrive%2Fcallback" in url or "api/drive/callback" in url
+
+
+def test_send_moves_the_job_and_returns_the_link(client, monkeypatch):
+    from capcut_agent.web import app as web_app
+
+    video = _seed(client)
+    job = client.store.add(video)
+    client.store.transition(job.id, "running")
+    client.store.transition(job.id, "review")
+    client.store.transition(job.id, "approved")
+
+    monkeypatch.setattr(web_app.drive_api, "send",
+                        lambda ws, path, on_progress=None: {
+                            "webViewLink": "https://drive.google.com/보기", "id": "F1"})
+
+    result = client.post(f"/api/jobs/{job.id}/send")
+
+    assert result.status_code == 200
+    assert result.json()["link"].endswith("보기")
+    assert client.store.get(job.id).status == "uploaded"
+
+
+def test_a_failed_send_does_not_sit_in_uploading(client, monkeypatch):
+    """실패를 '전송 중' 으로 남기면 끝난 줄 알고 계속 기다리게 된다."""
+    from capcut_agent.web import app as web_app
+
+    video = _seed(client, "다른영상.mp4")
+    job = client.store.add(video)
+    for step in ("running", "review", "approved"):
+        client.store.transition(job.id, step)
+
+    def refuse(ws, path, on_progress=None):
+        raise web_app.drive_api.DriveError("드라이브가 거절했습니다")
+
+    monkeypatch.setattr(web_app.drive_api, "send", refuse)
+
+    assert client.post(f"/api/jobs/{job.id}/send").status_code == 500
+    assert client.store.get(job.id).status == "failed"
+    assert "거절" in client.store.get(job.id).error

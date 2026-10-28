@@ -153,6 +153,25 @@
   <div class="hint">키를 넣으면 클로드가 대본을 읽고 숏폼 구간을 고릅니다.
     없으면 낱말·자리 규칙으로 고릅니다.</div>
 
+  <div class="bar" style="margin-top:10px">
+    <label>드라이브 클라이언트 ID
+      <input type="text" id="gid" placeholder="….apps.googleusercontent.com" autocomplete="off">
+    </label>
+    <label>시크릿
+      <input type="password" id="gsecret" placeholder="GOCSPX-…" autocomplete="off">
+    </label>
+  </div>
+  <div class="bar" style="margin-top:10px">
+    <label>받을 폴더
+      <input type="text" id="gfolder" placeholder="폴더 주소를 붙여 넣으세요 (비우면 앱 폴더)">
+    </label>
+    <button id="saveDrive">저장</button>
+    <button id="connectDrive">연결</button>
+    <span class="meta" id="driveState">…</span>
+  </div>
+  <div class="hint">비워 두면 앱이 자기 폴더를 만들어 넣습니다.
+    이미 쓰던 폴더에 넣으려면 전체 권한이 필요합니다.</div>
+
   <hr>
   <div id="jobs"><div class="empty">작업이 없습니다. inbox 에 영상을 넣고 훑어 보세요.</div></div>
 </div>
@@ -205,6 +224,7 @@ function render() {
       acts.push(`<button class="go" data-act="approve" data-id="${job.id}">검수 완료</button>`);
     if (["approved", "uploaded"].includes(job.status))
       acts.push(`<button data-act="reopen" data-id="${job.id}">재검수</button>`);
+      acts.push(`<button class="go" data-act="send" data-id="${job.id}">드라이브로 보내기</button>`);
     if (job.status === "failed")
       acts.push(`<button data-act="retry" data-id="${job.id}">다시</button>`);
     if (job.status !== "running")
@@ -234,6 +254,50 @@ async function api(path, options) {
     throw new Error(body.detail || response.statusText);
   }
   return response.json();
+}
+
+$("saveDrive").onclick = async (event) => {
+  event.target.disabled = true;
+  try {
+    // 비밀값은 비워 보내면 서버가 그대로 둔다. 폴더만 바꾸려다 연결이
+    // 끊기면 안 된다.
+    const drive = await api("/api/drive/settings", {
+      method: "POST",
+      body: JSON.stringify({
+        clientId: $("gid").value,
+        clientSecret: $("gsecret").value,
+        folder: $("gfolder").value,
+        full: Boolean($("gfolder").value.trim()),
+      }),
+    });
+    $("gsecret").value = "";
+    showDrive(drive);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    event.target.disabled = false;
+  }
+};
+
+$("connectDrive").onclick = async (event) => {
+  event.target.disabled = true;
+  try {
+    const { url } = await api("/api/drive/connect");
+    window.open(url, "_blank");
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    event.target.disabled = false;
+  }
+};
+
+function showDrive(drive) {
+  if (!drive) return;
+  $("driveState").textContent = drive.connected
+    ? `연결됨${drive.folderId ? " — 지정 폴더" : " — 앱 폴더"}`
+    : "연결 안 됨";
+  if (drive.clientId && !$("gid").value) $("gid").placeholder = drive.clientId;
+  if (drive.folderId && !$("gfolder").value) $("gfolder").placeholder = drive.folderId;
 }
 
 $("saveKey").onclick = async (event) => {
@@ -290,6 +354,7 @@ async function refresh() {
   $("track").textContent = `${status.trackLabel} · ASR ${status.asr}`;
   $("inbox").textContent = status.workspace.inbox;
   showKey(status.apiKey);
+  showDrive(status.drive);
   $("live").className = status.workerRunning ? "dot on" : "dot bad";
   $("watch").textContent = status.watcherRunning
     ? "inbox 자동 감지 켜짐" : "자동 감지 꺼짐";
