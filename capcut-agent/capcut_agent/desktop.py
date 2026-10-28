@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -123,7 +124,8 @@ def run(workspace: Path, draft_dir: str | None = None,
         if how == "browser":
             on_message("")
             on_message("네이티브 창 대신 브라우저로 열었습니다.")
-            on_message("창으로 띄우려면 (선택):  python3 -m pip install pywebview")
+            # 지금 돌고 있는 파이썬을 적는다. venv 안이면 그 경로여야 한다.
+            on_message(f"창으로 띄우려면 (선택):  {sys.executable} -m pip install pywebview")
             on_message("  — 빌드가 깨지면 그냥 두세요. 기능은 같습니다.")
             on_message("종료하려면 Ctrl+C")
             # 브라우저로 열었으면 창 닫힘 신호가 없다. 사용자가 끊을 때까지 둔다.

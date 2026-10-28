@@ -1020,7 +1020,9 @@ APP_LOG = "~/CapCutAgent/app.log"
 #: Xcode 가 들고 오는 파이썬 3.9 에서는 컴파일이 깨진다. 이걸 필수 패키지와
 #: 같은 줄에 적으면 pip 가 하나만 실패해도 **전부** 설치하지 않아서, 꼭 필요한
 #: fastapi/uvicorn 까지 같이 날아간다. 그래서 줄을 나눈다.
-WINDOW_NOTE = "창으로 띄우려면 (선택):  python3 -m pip install pywebview"
+def window_note(python: str = "python3") -> str:
+    """창은 선택. venv 로 깔았으면 `python3` 이 아니라 그 파이썬이어야 한다."""
+    return f"창으로 띄우려면 (선택):  {python} -m pip install pywebview"
 WINDOW_FALLBACK = "  — 빌드가 깨지면 그냥 두세요. 브라우저로 열립니다."
 
 
@@ -1209,7 +1211,7 @@ def run_install_app(args) -> int:
         if arch:
             print(f"  ({' '.join(arch)} 로 띄웁니다 — 패키지가 그쪽에 깔려 있습니다)")
     print()
-    print(WINDOW_NOTE)
+    print(window_note(python))
     print(WINDOW_FALLBACK)
     print()
     print("열리지 않으면 터미널에서 직접 실행해 오류를 보세요:")

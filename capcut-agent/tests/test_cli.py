@@ -296,3 +296,13 @@ def test_mac_launcher_hunts_for_an_importable_arch():
     assert '"/usr/bin/arch -arm64" "/usr/bin/arch -x86_64" ""' in script
     # 어느 쪽도 안 되면 조용히 끝내지 않는다.
     assert "필요한 패키지를 읽지 못했습니다" in script
+
+
+def test_window_note_names_the_actual_python():
+    # venv 로 깔면 `python3` 은 그 venv 가 아니다. 복사해 붙인 명령이
+    # 엉뚱한 파이썬에 설치하면, 창은 여전히 안 뜨고 이유도 모르게 된다.
+    from capcut_agent.cli import window_note
+
+    venv = "/Users/x/CapCutAgent/venv/bin/python"
+    assert venv in window_note(venv)
+    assert "python3 -m pip" not in window_note(venv)
