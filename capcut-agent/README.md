@@ -162,6 +162,9 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 | `--subtitle-y -0.55` | 자막을 더 위로 (하단 UI가 가릴 때) |
 | `--max-chars 14` | 자막 한 줄을 더 짧게 |
 | `--no-subtitle` | 자막 없이 (캡컷 자동 캡션을 쓸 때) |
+| `--motion none\|fade\|pop\|rise` | 자막 등장 모션 (기본 `pop`) |
+| `--font-size 15` | 글자 크기. 키우면 한 줄 글자 수가 자동으로 준다 |
+| `--no-fill-gaps` | 자막 사이 빈틈을 그대로 둔다 (기본은 메움) |
 | `--srt` | SRT 도 같이 내보내기 |
 
 ---
@@ -212,6 +215,9 @@ python -m capcut_agent.cli caption 영상.mp4          # 파일 하나
 | `--anchor top` | `--shorts` 일 때 인물이 아래쪽에 잡혀 있으면 |
 | `--max-chars 14` | 자막 한 줄을 더 짧게 |
 | `--subtitle-y -0.55` | 자막을 더 위로 (하단 UI가 가릴 때) |
+| `--motion none\|fade\|pop\|rise` | 자막 등장 모션 (기본 `pop`) |
+| `--font-size 15` | 글자 크기. 키우면 한 줄 글자 수가 자동으로 준다 |
+| `--no-fill-gaps` | 자막 사이 빈틈을 그대로 둔다 (기본은 메움) |
 | `--srt` | SRT 도 같이 내보내기 |
 | `--inbox` | inbox 안의 영상을 전부 처리 |
 | `--cut` | 말 없는 구간도 같이 잘라낸다 |
@@ -305,7 +311,7 @@ capcut-agent/
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
 │   └── cli.py          # check / cut / caption / shorts / build
-└── tests/              # pytest 205개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 225개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash
@@ -389,6 +395,13 @@ python -m pytest tests -q
 ---
 
 ## 참고 프로젝트
+
+**[Capite](https://github.com/muneebkhan08/Capite)** (MIT) — 로컬 whisper 로 애니메이션
+자막을 영상에 구워 넣는 숏폼 자막 스튜디오. 27종 모션 프리셋과 ASS 내보내기를 갖췄습니다.
+
+글자 폭 비율과 *"한 줄 글자 수를 폰트 크기에서 역산한다"* 는 발상을 가져왔습니다.
+모션은 가져올 수 없었습니다 — Capite 는 ASS 로 굽고 이쪽은 캡컷 드래프트를
+만들기 때문에, 같은 목적을 **캡컷 키프레임**으로 새로 구현했습니다.
 
 **[dawn-cut](https://github.com/kwakseongjae/dawn-cut)** (MIT) — 100% 로컬에서 도는
 오픈소스 영상 편집기. 텍스트 기반 컷, 무음 제거, 한국어 자동 자막, 9:16 리프레이밍,

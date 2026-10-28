@@ -25,6 +25,80 @@ DEFAULT_MAX_CHARS = 18
 DEFAULT_MAX_LINES = 2
 #: 이만큼 쉬면 큐를 끊는다 (초).
 DEFAULT_GAP_BREAK = 0.5
+#: 글자 폭 비율. 한글은 전각이라 라틴 문자보다 넓다.
+#: (Capite 의 script registry 에서 가져온 값 — MIT, NOTICE 참고)
+CHAR_WIDTH_RATIO_CJK = 1.05
+CHAR_WIDTH_RATIO_LATIN = 0.55
+
+#: 한 줄 글자 수를 폰트 크기에서 역산할 때 쓰는 상수.
+#: 캡컷에서 font_size 12 · line_max_width 0.82 가 한글 18자로 보이는 걸
+#: 기준점으로 삼았다. 폰트를 키우면 한 줄 글자 수가 자동으로 준다.
+_LINE_BUDGET = 276.6
+
+
+def auto_max_chars(
+    font_size: float,
+    line_max_width: float = 0.82,
+    char_width_ratio: float = CHAR_WIDTH_RATIO_CJK,
+) -> int:
+    """폰트 크기와 줄 폭에서 한 줄 글자 수를 구한다.
+
+    손으로 18 을 박아두면 폰트를 키웠을 때 글자가 화면 밖으로 흘러넘친다.
+    영상·자막 크기에 맞춰 줄바꿈이 따라가야 한다.
+    """
+    denominator = max(font_size * char_width_ratio, 0.1)
+    return max(6, int(_LINE_BUDGET * line_max_width / denominator))
+
+
+def fill_gaps(
+    cues: list[SubtitleCue],
+    until: float | None = None,
+    boundaries: list[float] | None = None,
+    max_hold: float = 3.0,
+    snap: float = 0.35,
+) -> list[SubtitleCue]:
+    """자막 사이 빈틈을 메운다 — 각 장을 다음 장이 뜰 때까지 늘린다.
+
+    말과 말 사이 짧은 쉼마다 자막이 사라졌다 나타나면 깜빡여 보인다.
+    다음 장까지 붙여두면 화면이 안정된다.
+
+    다만 두 가지는 넘지 않는다.
+      * **컷 경계** — 넘기면 앞 문장이 새 장면 위에 남는다.
+      * max_hold — 말이 한참 없는 구간까지 붙들고 있지는 않는다.
+
+    컷 경계에서 앞 장은 경계에 맞춰 끝나는데 뒤 장은 패딩만큼 늦게 시작한다.
+    그 사이 두세 프레임이 비어 깜빡인다. snap 보다 작은 틈은 **뒤 장의 시작을
+    당겨** 닫는다. 글자가 아주 조금 먼저 뜨는 건 눈에 띄지 않는다.
+    """
+    if not cues:
+        return []
+    edges = sorted(boundaries or [])
+    out: list[SubtitleCue] = []
+    for index, cue in enumerate(cues):
+        target = cues[index + 1].start if index + 1 < len(cues) else until
+        end = cue.end
+        if target is not None and target > end:
+            limit = min(target, cue.end + max_hold)
+            # 컷 경계를 넘지 않는 선까지만.
+            for edge in edges:
+                if cue.end <= edge < limit:
+                    limit = edge
+                    break
+            end = max(end, limit)
+        out.append(SubtitleCue(cue.start, end, cue.text))
+
+    # 남은 미세한 틈은 뒤 장의 시작을 당겨 닫는다.
+    closed: list[SubtitleCue] = []
+    for index, cue in enumerate(out):
+        start = cue.start
+        if index:
+            previous_end = closed[-1].end
+            if 0 < start - previous_end <= snap:
+                start = previous_end
+        closed.append(SubtitleCue(start, cue.end, cue.text))
+    return closed
+
+
 #: 자막 한 장이 이보다 오래 떠 있으면 끊는다 (초).
 #:
 #: 이건 **안전장치**다. 실제로 끊는 일은 종결어미와 컷 경계가 한다. 상한을

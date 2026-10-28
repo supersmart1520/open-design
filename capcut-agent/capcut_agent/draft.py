@@ -115,6 +115,61 @@ def y_px_to_normalized(pixels: float, canvas_height: int) -> float:
     return pixels / half
 
 
+#: 자막 등장 모션.
+#:
+#: 캡컷 내장 애니메이션(material_animations)은 캡컷 자산 카탈로그의 resource_id 를
+#: 요구한다. 임의로 지어내면 아무것도 안 뜨거나 프로젝트가 깨진다. 그래서
+#: **키프레임**으로 넣는다 — 값이 전부 숫자라 외부 의존이 없고 확실히 렌더된다.
+Motion = Literal["none", "fade", "pop", "rise"]
+
+#: 모션이 끝나는 데 걸리는 시간 (초). 자막이 짧으면 그 길이에 맞춰 줄어든다.
+MOTION_SECONDS = 0.28
+
+
+def _keyframe(time_offset_us: int, value: float) -> dict:
+    return {
+        "curveType": "Line", "graphID": "", "id": new_id(),
+        "kf_type": 0, "time_offset": time_offset_us, "values": [value],
+    }
+
+
+def _keyframe_track(property_type: str, points: list[tuple[int, float]]) -> dict:
+    return {
+        "id": new_id(),
+        "keyframe_list": [_keyframe(offset, value) for offset, value in points],
+        "material_id": "",
+        "property_type": property_type,
+    }
+
+
+def motion_keyframes(motion: Motion, duration: float, settle_y: float) -> list[dict]:
+    """등장 모션을 키프레임으로. settle_y 는 모션이 끝난 뒤 자리잡을 세로 위치."""
+    if motion == "none" or duration <= 0:
+        return []
+    span = min(MOTION_SECONDS, duration * 0.6)
+    full = _us(span)
+    peak = _us(span * 0.65)
+
+    if motion == "fade":
+        return [_keyframe_track("KFTypeAlpha", [(0, 0.0), (full, 1.0)])]
+
+    if motion == "pop":
+        # 작게 들어와 살짝 넘쳤다가 제자리. 숏폼에서 가장 흔한 등장.
+        scale = [(0, 0.72), (peak, 1.06), (full, 1.0)]
+        return [
+            _keyframe_track("KFTypeScaleX", scale),
+            _keyframe_track("KFTypeScaleY", list(scale)),
+            _keyframe_track("KFTypeAlpha", [(0, 0.0), (peak, 1.0)]),
+        ]
+
+    # rise — 아래에서 올라와 자리잡는다. 위치는 **절대값**이라야 한다.
+    # 상대값으로 두면 공들여 맞춘 transform_y 를 키프레임이 덮어쓴다.
+    return [
+        _keyframe_track("KFTypePositionY", [(0, settle_y - 0.06), (full, settle_y)]),
+        _keyframe_track("KFTypeAlpha", [(0, 0.0), (full, 1.0)]),
+    ]
+
+
 @dataclass
 class SubtitleStyle:
     """자막 모양. 숏폼 기본값은 1080x1920 에서 읽히도록 맞춰 뒀다."""
@@ -131,6 +186,8 @@ class SubtitleStyle:
     alignment: int = 1
     line_max_width: float = 0.82
     line_spacing: float = 0.02
+    #: 등장 모션.
+    motion: Motion = "pop"
 
     @classmethod
     def from_pixels(
@@ -501,7 +558,10 @@ class DraftBuilder:
                     # 지뢰 7번: 자막 위치는 여기다.
                     "transform": {"x": style.transform_x, "y": style.transform_y},
                 },
-                "common_keyframes": [], "enable_adjust": False,
+                "common_keyframes": motion_keyframes(
+                    style.motion, cue.duration, style.transform_y
+                ),
+                "enable_adjust": False,
                 "enable_color_curves": True, "enable_color_wheels": True,
                 "enable_lut": False, "extra_material_refs": [],
                 "group_id": "", "hdr_settings": None, "id": new_id(),

@@ -46,7 +46,7 @@ from .silence import (
     keeps_from_words,
     overlap_to_timeline,
 )
-from .subtitle import DEFAULT_MAX_CHARS, Word, cues_from_words, to_srt
+from .subtitle import Word, auto_max_chars, cues_from_words, fill_gaps, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
 SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build")
@@ -111,8 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
     caption.add_argument("--language", default="ko", help="전사 언어 (기본 ko)")
     caption.add_argument("--model", default="", help="whisper 모델 (생략하면 트랙 기본값)")
-    caption.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
-                         help="자막 한 줄 글자 수")
+    caption.add_argument("--max-chars", type=int,
+                         help="자막 한 줄 글자 수. 생략하면 폰트 크기에서 자동으로 구한다.")
+    caption.add_argument("--font-size", type=float, default=12.0,
+                         help="자막 글자 크기 (기본 %(default)s). 키우면 한 줄 글자 수가 준다.")
+    caption.add_argument("--motion", choices=("none", "fade", "pop", "rise"),
+                         default="pop", help="자막 등장 모션 (기본 %(default)s)")
+    caption.add_argument("--no-fill-gaps", action="store_true",
+                         help="자막 사이 빈틈을 메우지 않는다 (기본은 메움)")
     caption.add_argument("--cut", action="store_true",
                          help="말 없는 구간도 같이 잘라낸다")
     caption.add_argument("--cut-by", choices=("speech", "silence"), default="speech",
@@ -150,8 +156,12 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--anchor", default="center",
                        choices=("center", "left", "right", "top", "bottom"),
                        help="세로 크롭에서 남길 쪽 (기본 center)")
-    build.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
-                       help="자막 한 줄 글자 수")
+    build.add_argument("--max-chars", type=int,
+                       help="자막 한 줄 글자 수. 생략하면 폰트 크기에서 자동으로 구한다.")
+    build.add_argument("--font-size", type=float, default=12.0,
+                       help="자막 글자 크기 (기본 %(default)s)")
+    build.add_argument("--motion", choices=("none", "fade", "pop", "rise"),
+                       default="pop", help="자막 등장 모션 (기본 %(default)s)")
     build.add_argument("--subtitle-y", type=float, default=-0.72,
                        help="자막 세로 위치. 화면 중앙 0, 아래가 음수.")
     build.add_argument("--no-subtitle", action="store_true", help="자막 트랙 생략")
@@ -411,9 +421,8 @@ def caption_one(video: Path, workspace, args) -> int:
         if dropped:
             print(f"  … 컷에 통째로 들어간 단어 {dropped}개는 자막에서 뺐습니다")
         boundaries = _cut_boundaries(keeps)
-    cues = cues_from_words(
-        words, max_chars=args.max_chars, boundaries=boundaries
-    )
+    max_chars = args.max_chars or auto_max_chars(args.font_size)
+    cues = cues_from_words(words, max_chars=max_chars, boundaries=boundaries)
     if not cues:
         print("자막으로 만들 말이 없습니다.", file=sys.stderr)
         return 1
@@ -428,8 +437,16 @@ def caption_one(video: Path, workspace, args) -> int:
     else:
         builder.add_clip(media, 0.0, media.duration)
 
+    # 빈틈 메우기는 타임라인 길이를 알아야 하므로 클립을 깐 뒤에 한다.
+    if not args.no_fill_gaps:
+        cues = fill_gaps(
+            cues, until=builder.timeline_us / 1_000_000, boundaries=boundaries
+        )
+
     height = builder.canvas.height
-    speech_style = SubtitleStyle.from_pixels(args.speech_y, height)
+    speech_style = SubtitleStyle.from_pixels(
+        args.speech_y, height, font_size=args.font_size, motion=args.motion
+    )
     _warn_offscreen("말하는 자막", args.speech_y, height)
     builder.add_subtitles(cues, speech_style)
 
@@ -438,7 +455,9 @@ def caption_one(video: Path, workspace, args) -> int:
         title = args.title or representative_line(transcript)
         if title:
             _warn_offscreen("제목 자막", args.title_y, height)
-            builder.add_title(title, SubtitleStyle.from_pixels(args.title_y, height))
+            builder.add_title(title, SubtitleStyle.from_pixels(
+                args.title_y, height, font_size=args.font_size, motion=args.motion
+            ))
 
     mode = args.media_mode or default_media_mode()
     folder = builder.write(resolve_draft_root(args.draft_dir), media_mode=mode)
@@ -449,7 +468,8 @@ def caption_one(video: Path, workspace, args) -> int:
 
     print()
     print(f"캔버스    : {builder.canvas.width}x{builder.canvas.height}")
-    print(f"문장       : {len(transcript.segments)}개 → 자막 {len(cues)}장")
+    print(f"문장       : {len(transcript.segments)}개 → 자막 {len(cues)}장 "
+          f"(한 줄 {max_chars}자, 모션 {args.motion})")
     if title:
         print(f"제목      : {title}")
     if mode != "none":
@@ -482,7 +502,9 @@ def caption_one(video: Path, workspace, args) -> int:
                         else round(media.duration, 3),
         },
         "자막": {
-            "장수": len(cues), "한줄글자수": args.max_chars,
+            "장수": len(cues), "한줄글자수": max_chars,
+            "글자크기": args.font_size, "모션": args.motion,
+            "빈틈메움": not args.no_fill_gaps,
             "컷으로버린단어": dropped,
             "말하는자막Ypx": args.speech_y,
             "제목": title or None, "제목Ypx": args.title_y if title else None,
@@ -693,7 +715,10 @@ def run_build(args, workspace) -> int:
         return 1
 
     draft_root = resolve_draft_root(args.draft_dir)
-    style = SubtitleStyle(transform_y=args.subtitle_y)
+    max_chars = args.max_chars or auto_max_chars(args.font_size)
+    style = SubtitleStyle(
+        transform_y=args.subtitle_y, font_size=args.font_size, motion=args.motion
+    )
     stamp = f"{datetime.now():%m%d-%H%M%S}"
     print(f"원본      : {media.path}")
     print(f"선택       : {len(chosen)}개")
@@ -708,7 +733,7 @@ def run_build(args, workspace) -> int:
 
         cues = []
         if transcript is not None and not args.no_subtitle:
-            cues = _window_cues(transcript, candidate.start, candidate.end, args.max_chars)
+            cues = _window_cues(transcript, candidate.start, candidate.end, max_chars)
             builder.add_subtitles(cues, style)
 
         folder = builder.write(draft_root)

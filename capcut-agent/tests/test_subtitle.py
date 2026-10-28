@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from capcut_agent.subtitle import (
     BOUND_NOUNS,
     SubtitleCue,
@@ -201,3 +203,115 @@ def test_a_cue_never_spans_a_cut_boundary():
 def test_boundaries_outside_the_speech_change_nothing():
     words = _words([("하나", 0.0, 0.5), ("둘입니다", 0.5, 1.0)])
     assert cues_from_words(words, boundaries=[99.0]) == cues_from_words(words)
+
+
+# ----------------------------------------- 영상 크기에 맞춘 줄바꿈 (Capite)
+
+
+def test_a_bigger_font_fits_fewer_characters_per_line():
+    from capcut_agent.subtitle import auto_max_chars
+
+    assert auto_max_chars(20) < auto_max_chars(12) < auto_max_chars(8)
+
+
+def test_the_default_font_keeps_the_hand_tuned_line_length():
+    from capcut_agent.subtitle import DEFAULT_MAX_CHARS, auto_max_chars
+
+    assert auto_max_chars(12) == DEFAULT_MAX_CHARS
+
+
+def test_latin_fits_more_characters_than_korean():
+    from capcut_agent.subtitle import (
+        CHAR_WIDTH_RATIO_LATIN,
+        auto_max_chars,
+    )
+
+    latin = auto_max_chars(12, char_width_ratio=CHAR_WIDTH_RATIO_LATIN)
+    assert latin > auto_max_chars(12)
+
+
+def test_a_narrower_line_fits_fewer_characters():
+    from capcut_agent.subtitle import auto_max_chars
+
+    assert auto_max_chars(12, line_max_width=0.5) < auto_max_chars(12)
+
+
+def test_absurd_font_sizes_do_not_blow_up():
+    from capcut_agent.subtitle import auto_max_chars
+
+    assert auto_max_chars(0) >= 6
+    assert auto_max_chars(1000) >= 6
+
+
+# --------------------------------------------------- 자막 사이 빈틈 메우기
+
+
+def test_a_cue_is_held_until_the_next_one_appears():
+    from capcut_agent.subtitle import fill_gaps
+
+    filled = fill_gaps([SubtitleCue(0.0, 1.0, "하나"), SubtitleCue(2.5, 3.5, "둘")])
+    assert filled[0].end == pytest.approx(2.5)
+
+
+def test_the_last_cue_runs_to_the_end_of_the_timeline():
+    from capcut_agent.subtitle import fill_gaps
+
+    filled = fill_gaps([SubtitleCue(0.0, 1.0, "끝")], until=3.0)
+    assert filled[0].end == pytest.approx(3.0)
+
+
+def test_a_cue_is_never_held_across_a_cut():
+    """컷을 넘겨 붙들면 앞 문장이 새 장면 위에 남는다."""
+    from capcut_agent.subtitle import fill_gaps
+
+    filled = fill_gaps(
+        [SubtitleCue(0.0, 1.0, "앞"), SubtitleCue(4.0, 5.0, "뒤")],
+        boundaries=[2.0],
+    )
+    assert filled[0].end == pytest.approx(2.0)
+
+
+def test_a_long_silence_is_not_held_forever():
+    from capcut_agent.subtitle import fill_gaps
+
+    filled = fill_gaps(
+        [SubtitleCue(0.0, 1.0, "하나"), SubtitleCue(30.0, 31.0, "둘")],
+        max_hold=3.0,
+    )
+    assert filled[0].end == pytest.approx(4.0)
+
+
+def test_filling_never_shortens_a_cue():
+    from capcut_agent.subtitle import fill_gaps
+
+    original = [SubtitleCue(0.0, 2.0, "길다"), SubtitleCue(1.5, 3.0, "겹침")]
+    for before, after in zip(original, fill_gaps(original)):
+        assert after.end >= before.end
+
+
+def test_filling_an_empty_list_is_empty():
+    from capcut_agent.subtitle import fill_gaps
+
+    assert fill_gaps([]) == []
+
+
+def test_a_tiny_gap_is_closed_by_pulling_the_next_cue_back():
+    """컷 직후 패딩 때문에 두세 프레임이 비어 깜빡인다."""
+    from capcut_agent.subtitle import fill_gaps
+
+    filled = fill_gaps(
+        [SubtitleCue(0.0, 2.0, "앞"), SubtitleCue(2.08, 4.0, "뒤")],
+        boundaries=[2.0],
+    )
+    assert filled[1].start == pytest.approx(2.0)
+    assert filled[0].end == pytest.approx(filled[1].start)
+
+
+def test_a_real_pause_is_not_closed_by_snapping():
+    from capcut_agent.subtitle import fill_gaps
+
+    filled = fill_gaps(
+        [SubtitleCue(0.0, 1.0, "앞"), SubtitleCue(10.0, 11.0, "뒤")],
+        boundaries=[1.0], max_hold=3.0, snap=0.35,
+    )
+    assert filled[1].start == pytest.approx(10.0)

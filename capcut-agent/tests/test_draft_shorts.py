@@ -291,3 +291,67 @@ def test_hex_to_rgb_converts_to_unit_floats():
 def test_hex_to_rgb_rejects_bad_input():
     with pytest.raises(ValueError):
         hex_to_rgb("#FFF")
+
+
+# ------------------------------------------------------------ 자막 모션
+
+
+def _text_segment_of(builder) -> dict:
+    return [t for t in builder.timeline_json()["tracks"] if t["type"] == "text"][0]["segments"][0]
+
+
+def _with_motion(tmp_path, motion):
+    builder = DraftBuilder(media=_media(tmp_path), name=f"모션-{motion}", canvas=SHORTS)
+    builder.add_video_cuts([Range(0.0, 10.0)])
+    builder.add_subtitles(
+        [SubtitleCue(0.0, 3.0, "안녕하세요")], SubtitleStyle(motion=motion)
+    )
+    return _text_segment_of(builder)
+
+
+def test_none_leaves_the_segment_without_keyframes(tmp_path):
+    assert _with_motion(tmp_path, "none")["common_keyframes"] == []
+
+
+def test_fade_animates_only_the_alpha(tmp_path):
+    tracks = _with_motion(tmp_path, "fade")["common_keyframes"]
+    assert [t["property_type"] for t in tracks] == ["KFTypeAlpha"]
+
+
+def test_pop_scales_both_axes_and_fades_in(tmp_path):
+    tracks = _with_motion(tmp_path, "pop")["common_keyframes"]
+    kinds = {t["property_type"] for t in tracks}
+    assert kinds == {"KFTypeScaleX", "KFTypeScaleY", "KFTypeAlpha"}
+
+
+def test_pop_overshoots_then_settles_at_one(tmp_path):
+    tracks = _with_motion(tmp_path, "pop")["common_keyframes"]
+    scale = next(t for t in tracks if t["property_type"] == "KFTypeScaleX")
+    values = [k["values"][0] for k in scale["keyframe_list"]]
+    assert values[0] < 1.0 < values[1]
+    assert values[-1] == pytest.approx(1.0)
+
+
+def test_rise_keyframes_land_on_the_configured_position(tmp_path):
+    """위치 키프레임은 절대값이다. 상대값이면 transform_y 를 덮어쓴다."""
+    builder = DraftBuilder(media=_media(tmp_path), name="상승", canvas=SHORTS)
+    builder.add_video_cuts([Range(0.0, 10.0)])
+    builder.add_subtitles(
+        [SubtitleCue(0.0, 3.0, "올라옴")], SubtitleStyle(transform_y=-0.5, motion="rise")
+    )
+    tracks = _text_segment_of(builder)["common_keyframes"]
+    position = next(t for t in tracks if t["property_type"] == "KFTypePositionY")
+    assert position["keyframe_list"][-1]["values"][0] == pytest.approx(-0.5)
+
+
+def test_keyframes_start_at_the_segment_start(tmp_path):
+    for track in _with_motion(tmp_path, "pop")["common_keyframes"]:
+        assert track["keyframe_list"][0]["time_offset"] == 0
+
+
+def test_motion_never_outlasts_a_very_short_cue(tmp_path):
+    builder = DraftBuilder(media=_media(tmp_path), name="짧은자막", canvas=SHORTS)
+    builder.add_video_cuts([Range(0.0, 10.0)])
+    builder.add_subtitles([SubtitleCue(0.0, 0.2, "짧")], SubtitleStyle(motion="pop"))
+    for track in _text_segment_of(builder)["common_keyframes"]:
+        assert track["keyframe_list"][-1]["time_offset"] <= int(0.2 * US)
