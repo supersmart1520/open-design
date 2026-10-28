@@ -36,7 +36,7 @@ class JobOptions(BaseModel):
     shorts: bool = False
     srt: bool = True
     noTitle: bool = False
-    motion: str = "pop"
+    motion: str = "none"
     fontSize: float = 12.0
     speechY: float = -850.0
     titleY: float = 1400.0
@@ -45,6 +45,8 @@ class JobOptions(BaseModel):
     cutBy: str = "hybrid"
     mediaMode: str = ""
     language: str = "ko"
+    #: 한 영상에서 뽑을 숏폼 개수. 0 이면 통째로 자막만 단다.
+    shortsCount: int = 0
 
 
 class ScanRequest(BaseModel):

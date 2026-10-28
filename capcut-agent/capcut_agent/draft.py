@@ -47,6 +47,8 @@ from .media import MediaInfo
 from .paths import TIMELINE_FILENAMES
 from .silence import Range
 from .subtitle import SubtitleCue
+from .title import DEFAULT_MAX_CHARS as TITLE_MAX_CHARS
+from .title import clean_title
 
 #: 캡컷 타임라인은 전부 마이크로초 정수다.
 US = 1_000_000
@@ -186,8 +188,8 @@ class SubtitleStyle:
     alignment: int = 1
     line_max_width: float = 0.82
     line_spacing: float = 0.02
-    #: 등장 모션.
-    motion: Motion = "pop"
+    #: 등장 모션. 기본은 끔 — 캡컷에서 검증되기 전까지 보수적으로 간다.
+    motion: Motion = "none"
 
     @classmethod
     def from_pixels(
@@ -591,14 +593,16 @@ class DraftBuilder:
         style: SubtitleStyle | None = None,
         start: float = 0.0,
         end: float | None = None,
+        max_chars: int = TITLE_MAX_CHARS,
     ) -> None:
         """영상을 대표하는 제목 한 장. 영상당 하나, 한 줄.
 
         말하는 자막과 **같은 텍스트 트랙에 섞지 않는다.** 위치가 달라
         한 트랙에 두면 캡컷 안에서 한꺼번에 옮기기가 불편해진다.
         """
-        line = " ".join(text.split())
+        line = clean_title(text, max_chars)
         if not line:
+            # 빈 텍스트 세그먼트는 캡컷에서 빈 상자로 남는다.
             return
         if end is None:
             end = max(self.timeline_us / US, start + 1.0)

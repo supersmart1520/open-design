@@ -33,26 +33,43 @@ IDLE_SLEEP = 0.4
 def build_command(job, workspace: Path, draft_dir: str | None = None) -> list[str]:
     """작업 옵션을 CLI 인자로. 대시보드가 쓰는 유일한 조립 지점."""
     options = job.options or {}
-    command = [
+    base = [
         sys.executable, "-m", "capcut_agent.cli",
         "--workspace", str(workspace),
-        "caption", job.source, "--json",
     ]
-    if options.get("cut", True):
-        command.append("--cut")
-    if options.get("shorts"):
-        command.append("--shorts")
-    if options.get("srt", True):
-        command.append("--srt")
-    if options.get("noTitle"):
-        command.append("--no-title")
-    for flag, key in (
-        ("--motion", "motion"), ("--font-size", "fontSize"),
-        ("--speech-y", "speechY"), ("--title-y", "titleY"),
-        ("--title", "title"), ("--anchor", "anchor"),
-        ("--cut-by", "cutBy"), ("--media-mode", "mediaMode"),
-        ("--language", "language"),
-    ):
+    count = int(options.get("shortsCount") or 0)
+
+    if count >= 1:
+        # 한 영상에서 숏폼 여러 개. 점수 상위 N개를 바로 만든다.
+        command = base + ["shorts", job.source, "--json", "--auto", str(count)]
+        pairs = (
+            ("--motion", "motion"), ("--font-size", "fontSize"),
+            ("--subtitle-y", "speechY"), ("--anchor", "anchor"),
+            ("--language", "language"),
+        )
+        if options.get("srt", True):
+            command.append("--srt")
+        if options.get("noTitle"):
+            command.append("--no-subtitle")
+    else:
+        command = base + ["caption", job.source, "--json"]
+        if options.get("cut", True):
+            command.append("--cut")
+        if options.get("shorts"):
+            command.append("--shorts")
+        if options.get("srt", True):
+            command.append("--srt")
+        if options.get("noTitle"):
+            command.append("--no-title")
+        pairs = (
+            ("--motion", "motion"), ("--font-size", "fontSize"),
+            ("--speech-y", "speechY"), ("--title-y", "titleY"),
+            ("--title", "title"), ("--anchor", "anchor"),
+            ("--cut-by", "cutBy"), ("--media-mode", "mediaMode"),
+            ("--language", "language"),
+        )
+
+    for flag, key in pairs:
         value = options.get(key)
         if value not in (None, ""):
             command += [flag, str(value)]
@@ -154,6 +171,7 @@ class Worker:
             self._fail(job_id, f"원본 파일이 없습니다: {job.source}")
             return
 
+        started_at = time.monotonic()
         self._emit(self.store.transition(job_id, "running", message="시작"))
         command = build_command(job, self.workspace, self.draft_dir)
         lines: list[str] = []
@@ -187,7 +205,11 @@ class Worker:
         self._emit(self.store.transition(
             job_id, "review", stage="done",
             message="캡컷에서 확인해 주세요",
-            result={"report": report, "summary": summarize(report)},
+            result={
+                "report": report,
+                "summary": summarize(report),
+                "elapsedSec": round(time.monotonic() - started_at, 1),
+            },
         ))
 
     # ------------------------------------------------------------- 보조

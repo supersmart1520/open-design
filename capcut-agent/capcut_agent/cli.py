@@ -49,10 +49,12 @@ from .silence import (
     overlap_to_timeline,
 )
 from .subtitle import Word, auto_max_chars, cues_from_words, fill_gaps, to_srt
+from .title import DEFAULT_MAX_CHARS as TITLE_MAX_CHARS
+from .title import clean_title
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
-SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build", "serve", "app",
-                "install-skill", "install-app")
+SUBCOMMANDS = ("check", "doctor", "cut", "caption", "shorts", "build", "serve",
+                "app", "install-skill", "install-app")
 
 
 def _fmt(seconds: float) -> str:
@@ -87,6 +89,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("check", help="환경 + 저장소 점검")
 
+    doctor = subparsers.add_parser(
+        "doctor", help="whisper 가 실제로 도는지 끝까지 돌려 확인"
+    )
+    doctor.add_argument("--video", help="진단에 쓸 영상 (생략하면 inbox 첫 영상)")
+    doctor.add_argument("--seconds", type=int, default=20,
+                        help="잘라 쓸 길이 (기본 %(default)s초)")
+    doctor.add_argument("--model", default="", help="whisper 모델")
+    doctor.add_argument("--language", default="ko", help="전사 언어")
+
     cut = subparsers.add_parser("cut", help="무음 컷 드래프트 (가로 그대로)")
     cut.add_argument("video", nargs="?", help="입력 mp4 / mov")
     cut.add_argument("--inbox", action="store_true", help="inbox 안의 영상을 전부 처리")
@@ -119,7 +130,9 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--font-size", type=float, default=12.0,
                          help="자막 글자 크기 (기본 %(default)s). 키우면 한 줄 글자 수가 준다.")
     caption.add_argument("--motion", choices=("none", "fade", "pop", "rise"),
-                         default="pop", help="자막 등장 모션 (기본 %(default)s)")
+                         default="none",
+                         help="자막 등장 모션 (기본 %(default)s). 캡컷에서 "
+                              "검증되기 전까지 꺼둡니다 — fade 가 가장 안전합니다.")
     caption.add_argument("--no-fill-gaps", action="store_true",
                          help="자막 사이 빈틈을 메우지 않는다 (기본은 메움)")
     caption.add_argument("--cut", action="store_true",
@@ -136,6 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--title-y", type=float, default=TITLE_Y_PX,
                          help="제목 자막 세로 위치 (캔버스 픽셀). 기본 %(default)s")
     caption.add_argument("--no-title", action="store_true", help="제목 자막 없이")
+    caption.add_argument("--title-max-chars", type=int, default=TITLE_MAX_CHARS,
+                         help="제목 최대 글자 수 (기본 %(default)s). 넘으면 "
+                              "어절 경계에서 자릅니다.")
     caption.add_argument("--media-mode",
                          choices=("auto", "link", "copy", "none"),
                          help="미디어를 드래프트 폴더로 들이는 방식. macOS 는 "
@@ -156,6 +172,23 @@ def build_parser() -> argparse.ArgumentParser:
     shorts.add_argument("--min-seconds", type=float, default=18.0, help="후보 최소 길이")
     shorts.add_argument("--max-seconds", type=float, default=60.0, help="후보 최대 길이")
     shorts.add_argument("--limit", type=int, default=8, help="추천 개수")
+    shorts.add_argument("--auto", type=int, metavar="N",
+                        help="승인 없이 점수 상위 N개를 바로 드래프트로 만든다. "
+                             "한 영상에서 뽑을 숏폼 개수.")
+    shorts.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
+    shorts.add_argument("--anchor", default="center",
+                        choices=("center", "left", "right", "top", "bottom"),
+                        help="세로 크롭에서 남길 쪽")
+    shorts.add_argument("--motion", choices=("none", "fade", "pop", "rise"),
+                        default="none", help="자막 등장 모션")
+    shorts.add_argument("--font-size", type=float, default=12.0, help="자막 글자 크기")
+    shorts.add_argument("--subtitle-y", type=float, default=-850.0,
+                        help="자막 세로 위치 (캔버스 픽셀)")
+    shorts.add_argument("--max-chars", type=int, help="자막 한 줄 글자 수")
+    shorts.add_argument("--no-subtitle", action="store_true", help="자막 없이")
+    shorts.add_argument("--srt", action="store_true", help="SRT 도 같이")
+    shorts.add_argument("--json", action="store_true",
+                        help="결과를 JSON 한 줄로 (대시보드용)")
 
     serve = subparsers.add_parser("serve", help="로컬 대시보드 실행")
     serve.add_argument("--host", default="127.0.0.1",
@@ -191,7 +224,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--font-size", type=float, default=12.0,
                        help="자막 글자 크기 (기본 %(default)s)")
     build.add_argument("--motion", choices=("none", "fade", "pop", "rise"),
-                       default="pop", help="자막 등장 모션 (기본 %(default)s)")
+                       default="none", help="자막 등장 모션 (기본 %(default)s)")
     build.add_argument("--subtitle-y", type=float, default=-0.72,
                        help="자막 세로 위치. 화면 중앙 0, 아래가 음수.")
     build.add_argument("--no-subtitle", action="store_true", help="자막 트랙 생략")
@@ -488,12 +521,18 @@ def caption_one(video: Path, workspace, args) -> int:
 
     title = ""
     if not args.no_title:
-        title = args.title or representative_line(transcript)
+        raw_title = args.title or representative_line(transcript)
+        title = clean_title(raw_title, args.title_max_chars)
         if title:
             _warn_offscreen("제목 자막", args.title_y, height)
-            builder.add_title(title, SubtitleStyle.from_pixels(
-                args.title_y, height, font_size=args.font_size, motion=args.motion
-            ))
+            builder.add_title(
+                title,
+                SubtitleStyle.from_pixels(
+                    args.title_y, height,
+                    font_size=args.font_size, motion=args.motion,
+                ),
+                max_chars=args.title_max_chars,
+            )
 
     mode = args.media_mode or default_media_mode()
     folder = builder.write(resolve_draft_root(args.draft_dir), media_mode=mode)
@@ -695,12 +734,41 @@ def run_shorts(args, workspace) -> int:
         print(f"      {candidate.title}")
         for reason in candidate.reasons[:3]:
             print(f"      · {reason}")
+    if args.auto:
+        return _auto_build(args, workspace, plan_path, candidates)
+
     print()
     print("다음 — 고르는 건 사람이 합니다:")
     print(f"  1. {plan_path} 를 열어 쓸 후보의 \"선택\" 을 true 로 바꾸세요")
     print("     (시작·끝 초를 직접 고쳐도 됩니다)")
     print(f"  2. python3 -m capcut_agent.cli build \"{plan_path}\"")
     return 0
+
+
+def _auto_build(args, workspace, plan_path: Path, candidates) -> int:
+    """승인을 건너뛰고 점수 상위 N개를 바로 만든다.
+
+    사람이 고르는 쪽이 늘 낫다. 다만 한 영상에서 N개를 뽑아야 하는 작업량이면
+    매번 고르고 앉아 있을 수 없다. 그래서 고르는 자리를 옵션으로 연다.
+    승인 자체는 대시보드의 '검수 대기' 에서 여전히 사람이 한다.
+    """
+    wanted = max(1, args.auto)
+    chosen = sorted(candidates, key=lambda c: -c.score)[:wanted]
+    for candidate in chosen:
+        candidate.selected = True
+    save_candidates(plan_path, Path(args.video).expanduser(),
+                    Transcript(language="", text=""), candidates)
+
+    print()
+    print(f"자동 선택  : 점수 상위 {len(chosen)}개")
+    build_args = argparse.Namespace(
+        plan=str(plan_path), draft_dir=args.draft_dir, anchor=args.anchor,
+        max_chars=args.max_chars, font_size=args.font_size,
+        motion=args.motion, subtitle_y=args.subtitle_y,
+        no_subtitle=args.no_subtitle, srt=args.srt,
+        json=getattr(args, "json", False),
+    )
+    return run_build(build_args, workspace)
 
 
 # --------------------------------------------------------- build (모드 A 2단계)
@@ -789,7 +857,7 @@ def run_build(args, workspace) -> int:
             srt_path.write_text(to_srt(cues), encoding="utf-8")
             print(f"      {srt_path}")
 
-    storage.write_report(workspace, f"{media.path.stem}-숏폼-{stamp}", {
+    report = {
         "모드": "shorts",
         "생성시각": datetime.now().isoformat(timespec="seconds"),
         "원본": str(media.path),
@@ -805,7 +873,18 @@ def run_build(args, workspace) -> int:
             }
             for c, folder, cues in made
         ],
-    })
+        # 대시보드 요약이 caption 과 같은 키를 읽을 수 있게 맞춰 둔다.
+        "드래프트": str(made[0][1]) if made else None,
+        "자막": {"장수": sum(len(cues) for _, _, cues in made)},
+        "컷": {"적용": True, "보존조각": len(made)},
+        "원본": {"경로": str(media.path),
+                 "해상도": f"{media.width}x{media.height}",
+                 "길이초": round(media.duration, 3)},
+        "캔버스": f"{SHORTS.width}x{SHORTS.height}",
+    }
+    storage.write_report(workspace, f"{media.path.stem}-숏폼-{stamp}", report)
+    if getattr(args, "json", False):
+        print("__CAPCUT_JSON__ " + json.dumps(report, ensure_ascii=False))
     _print_verify_steps()
     return 0
 
@@ -984,6 +1063,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(normalize_argv(raw))
     workspace = storage.resolve_workspace(args.workspace)
 
+    if args.command == "doctor":
+        from .doctor import format_diagnosis
+        from .doctor import run as run_doctor
+
+        print(format_diagnosis(run_doctor(
+            workspace, args.video, args.seconds, args.model, args.language
+        )))
+        return 0
     if args.command == "check" or not args.command:
         report = run_checks(workspace)
         print(format_report(report))

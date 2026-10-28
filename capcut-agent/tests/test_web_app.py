@@ -169,3 +169,47 @@ def test_the_summary_flattens_the_korean_report():
 
 def test_the_summary_survives_a_sparse_report():
     assert summarize({})["draft"] is None
+
+
+# ----------------------------------------- 숏폼 개수 / 처리 시간
+
+
+def test_the_shorts_count_defaults_to_whole_video(client):
+    _seed(client)
+    client.post("/api/scan", json={})
+    assert client.get("/api/jobs").json()["jobs"][0]["options"]["shortsCount"] == 0
+
+
+def test_the_shorts_count_is_stored_on_the_job(client):
+    _seed(client)
+    client.post("/api/scan", json={"options": {"shortsCount": 5}})
+    assert client.get("/api/jobs").json()["jobs"][0]["options"]["shortsCount"] == 5
+
+
+def test_a_count_of_zero_captions_the_whole_video():
+    command = build_command(_Job({"shortsCount": 0}), Path("/ws"))
+    assert "caption" in command and "shorts" not in command
+
+
+def test_a_positive_count_switches_to_pulling_shorts():
+    command = build_command(_Job({"shortsCount": 5}), Path("/ws"))
+    assert "shorts" in command
+    assert command[command.index("--auto") + 1] == "5"
+
+
+def test_the_shorts_path_still_carries_the_shared_options():
+    command = build_command(
+        _Job({"shortsCount": 3, "motion": "fade", "fontSize": 15}), Path("/ws")
+    )
+    assert command[command.index("--motion") + 1] == "fade"
+    assert command[command.index("--font-size") + 1] == "15"
+
+
+def test_captioning_flags_do_not_leak_into_the_shorts_path():
+    """--cut 과 --title 은 shorts 서브커맨드에 없다. 넘기면 파서가 죽는다."""
+    command = build_command(
+        _Job({"shortsCount": 2, "cut": True, "title": "제목", "cutBy": "hybrid"}),
+        Path("/ws"),
+    )
+    for flag in ("--cut", "--title", "--cut-by", "--media-mode"):
+        assert flag not in command

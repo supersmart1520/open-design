@@ -218,15 +218,20 @@ def transcribe(
     model: str = "",
     language: str = "ko",
     on_progress=None,
+    force: bool = False,
 ) -> Transcript:
-    """영상 → Transcript. 같은 내용이면 캐시에서 꺼낸다."""
+    """영상 → Transcript. 같은 내용이면 캐시에서 꺼낸다.
+
+    force 는 캐시를 건너뛴다 — 자가진단에서 실제로 모델이 도는지 보려면
+    캐시 적중이 오히려 거짓말을 한다.
+    """
     video = Path(video).expanduser().resolve()
     model = model or default_model(backend)
     key = cache_key(video, model, language)
     cache_dir.mkdir(parents=True, exist_ok=True)
     cached = cache_dir / f"{key}.json"
 
-    if cached.is_file():
+    if cached.is_file() and not force:
         try:
             if on_progress:
                 on_progress("전사 캐시에서 꺼냄")

@@ -60,6 +60,17 @@
   button.go { border-color: var(--accent); color: var(--accent); }
   button.bad:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
 
+  label { color: var(--dim); font-size: 11.5px; display: flex;
+          align-items: center; gap: 6px; }
+  input[type=number] {
+    font: inherit; font-variant-numeric: tabular-nums;
+    color: var(--text); background: var(--card);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 5px 8px; width: 62px; text-align: right;
+  }
+  input[type=number]:focus { outline: 0; border-color: var(--accent); }
+  .hint { color: var(--faint); font-size: 11.5px; margin-top: 8px; }
+
   code {
     background: var(--card); border: 1px solid var(--line); border-radius: 3px;
     padding: 1px 6px; font-size: 11.5px; color: var(--dim);
@@ -102,8 +113,14 @@
 
   <hr>
   <div class="bar">
+    <label>숏폼 개수
+      <input type="number" id="count" min="0" max="20" step="1" value="0">
+    </label>
     <button class="go" id="scan">지금 훑기</button>
     <span class="meta" id="watch">…</span>
+  </div>
+  <div class="hint" id="countHint"></div>
+  <div class="bar" style="margin-top:10px">
     <code id="inbox">…</code>
   </div>
 
@@ -152,6 +169,7 @@ function render() {
       fact("자막", s.cues ? s.cues + "장" : ""),
       fact("모션", s.motion),
       fact("캔버스", s.canvas),
+      fact("걸린 시간", job.result?.elapsedSec ? job.result.elapsedSec + "s" : ""),
     ].join("");
     const acts = [];
     if (job.status === "review")
@@ -189,6 +207,19 @@ async function api(path, options) {
   return response.json();
 }
 
+function describeCount() {
+  const n = Number($("count").value) || 0;
+  $("countHint").textContent = n === 0
+    ? "0 = 영상 하나를 통째로 — 무음 컷 + 자막"
+    : `${n} = 영상 하나에서 점수 상위 ${n}개를 숏폼으로 뽑음 (9:16)`;
+}
+$("count").oninput = () => {
+  describeCount();
+  localStorage.setItem("capcut.count", $("count").value);
+};
+$("count").value = localStorage.getItem("capcut.count") || "0";
+describeCount();
+
 async function refresh() {
   const [status, listing] = await Promise.all([
     api("/api/status"), api("/api/jobs"),
@@ -221,7 +252,10 @@ $("scan").onclick = async (event) => {
   event.target.disabled = true;
   try {
     const result = await api("/api/scan", {
-      method: "POST", body: JSON.stringify({}),
+      method: "POST",
+      body: JSON.stringify({
+        options: { shortsCount: Number($("count").value) || 0 },
+      }),
     });
     if (!result.added) alert(`새 영상이 없습니다 (inbox ${result.found}개)`);
     await refresh();
