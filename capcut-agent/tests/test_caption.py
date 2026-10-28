@@ -109,7 +109,8 @@ def _speech_track(draft_root: Path) -> dict:
 
 
 def test_caption_builds_a_draft_with_a_text_track(stub_probe, ws, draft_root, video):
-    assert _run(ws, draft_root, video) == 0
+    # 제목은 앞 3초를 차지하므로, 자막 장수를 세는 검사에서는 끈다.
+    assert _run(ws, draft_root, video, ["--no-title"]) == 0
     assert len(_speech_track(draft_root)["segments"]) >= len(LINES)
 
 
@@ -187,7 +188,7 @@ def test_caption_writes_the_script_and_a_report(stub_probe, ws, draft_root, vide
     assert LINES[0] in script.read_text("utf-8")
     report = json.loads(next(ws.reports.glob("*.json")).read_text("utf-8"))
     assert report["모드"] == "caption"
-    assert report["자막"]["장수"] >= len(LINES)
+    assert report["자막"]["장수"] >= 1
 
 
 def test_srt_flag_writes_a_sidecar(stub_probe, ws, draft_root, video):
@@ -314,22 +315,58 @@ def test_a_title_is_added_by_default(stub_probe, ws, draft_root, video):
     assert len(_title_track(draft_root)["segments"]) == 1
 
 
-def test_the_title_is_exactly_one_line(stub_probe, ws, draft_root, video):
-    _run(ws, draft_root, video, ["--title", "테슬라 공중부양\n영상 만들기"])
+def _title_content(draft_root: Path) -> dict:
     timeline = _timeline(draft_root)
     segment = _title_track(draft_root)["segments"][0]
     material = next(m for m in timeline["materials"]["texts"]
                     if m["id"] == segment["material_id"])
-    assert "\n" not in json.loads(material["content"])["text"]
+    return json.loads(material["content"])
+
+
+def test_the_title_is_two_lines(stub_probe, ws, draft_root, video):
+    """썸네일 제목은 1행 키워드 + 2행 결론 구조다."""
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유"])
+    assert _title_content(draft_root)["text"] == "학습코칭\n선택한 이유"
+
+
+def test_the_two_lines_get_different_colours(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유",
+                                 "--title-palette", "green"])
+    styles = _title_content(draft_root)["styles"]
+    assert len(styles) == 2
+    accent, plain = (st["fill"]["content"]["solid"]["color"] for st in styles)
+    assert accent != plain
+    assert plain == [1.0, 1.0, 1.0]       # 2행은 흰색
+
+
+def test_the_red_palette_swaps_the_accent(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유",
+                                 "--title-palette", "red"])
+    accent = _title_content(draft_root)["styles"][0]["fill"]["content"]["solid"]["color"]
+    assert accent[0] > accent[1]          # 빨강이 가장 세다
+
+
+def test_a_long_second_line_is_rendered_smaller(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "부모님 잔소리 아이한테 하지마세요"])
+    styles = _title_content(draft_root)["styles"]
+    assert styles[1]["size"] < styles[0]["size"]
+
+
+def test_two_short_lines_stay_the_same_size(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유"])
+    styles = _title_content(draft_root)["styles"]
+    assert styles[1]["size"] == styles[0]["size"]
+
+
+def test_the_title_sits_left_of_centre(stub_probe, ws, draft_root, video):
+    """인물은 보통 오른쪽에 있다. 얼굴과 제스처를 가리지 않게 살짝 왼쪽."""
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유"])
+    assert _title_track(draft_root)["segments"][0]["clip"]["transform"]["x"] < 0
 
 
 def test_an_explicit_title_wins_over_the_derived_one(stub_probe, ws, draft_root, video):
     _run(ws, draft_root, video, ["--title", "내가 정한 제목"])
-    timeline = _timeline(draft_root)
-    segment = _title_track(draft_root)["segments"][0]
-    material = next(m for m in timeline["materials"]["texts"]
-                    if m["id"] == segment["material_id"])
-    assert json.loads(material["content"])["text"] == "내가 정한 제목"
+    assert "내가" in _title_content(draft_root)["text"]
 
 
 def test_the_title_sits_at_the_agreed_position(stub_probe, ws, draft_root, video):
@@ -340,12 +377,36 @@ def test_the_title_sits_at_the_agreed_position(stub_probe, ws, draft_root, video
     assert y == pytest.approx(TITLE_Y_PX / 540)
 
 
-def test_the_title_spans_the_whole_timeline(stub_probe, ws, draft_root, video):
-    _run(ws, draft_root, video, ["--title", "제목"])
-    timeline = _timeline(draft_root)
-    segment = _title_track(draft_root)["segments"][0]
-    assert segment["target_timerange"]["start"] == 0
-    assert segment["target_timerange"]["duration"] == timeline["duration"]
+def test_the_title_is_a_short_hook_not_a_permanent_banner(
+    stub_probe, ws, draft_root, video
+):
+    """썸네일 후킹이라 길 필요가 없다. 기본 3초."""
+    from capcut_agent.draft import US
+
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유"])
+    span = _title_track(draft_root)["segments"][0]["target_timerange"]
+    assert span["start"] == 0
+    assert span["duration"] == pytest.approx(3 * US, rel=0.01)
+
+
+def test_the_title_duration_is_configurable(stub_probe, ws, draft_root, video):
+    from capcut_agent.draft import US
+
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유",
+                                 "--title-seconds", "1.5"])
+    span = _title_track(draft_root)["segments"][0]["target_timerange"]
+    assert span["duration"] == pytest.approx(1.5 * US, rel=0.01)
+
+
+def test_no_speech_subtitle_overlaps_the_title(stub_probe, ws, draft_root, video):
+    """제목이 떠 있는 동안 다른 자막이 겹치면 화면이 무너진다."""
+    from capcut_agent.draft import US
+
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유",
+                                 "--title-seconds", "3"])
+    title_end = 3 * US
+    for segment in _speech_track(draft_root)["segments"]:
+        assert segment["target_timerange"]["start"] >= title_end - 1
 
 
 def test_no_title_leaves_a_single_text_track(stub_probe, ws, draft_root, video):
@@ -400,7 +461,8 @@ def test_cutting_by_speech_never_loses_a_word_from_the_subtitles(
     자막만 사라지는 구간이 생겼다. 대본 기준 컷은 컷이 항상 단어 사이라
     모든 말이 자막으로 남아야 한다.
     """
-    _run(ws, draft_root, video, ["--cut", "--max-chars", "40"])
+    # 제목이 앞부분 자막을 가리므로 이 검사에서는 끈다.
+    _run(ws, draft_root, video, ["--cut", "--max-chars", "40", "--no-title"])
     timeline = _timeline(draft_root)
     texts = {m["id"]: json.loads(m["content"])["text"] for m in timeline["materials"]["texts"]}
     rendered = " ".join(

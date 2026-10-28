@@ -1,72 +1,177 @@
-"""제목 규칙 — 영상당 한 장, 한 줄, 짧게."""
+"""제목 규칙 — 릴스 썸네일 문법.
+
+두 줄, 명사형 종결, 행별 글자 수, 2행 축소, 2색 팔레트.
+"""
 
 from __future__ import annotations
 
-from capcut_agent.title import DEFAULT_MAX_CHARS, clean_title
+import pytest
+
+from capcut_agent.title import (
+    EXPAND_THRESHOLD,
+    LINE1_MAX,
+    LINE1_MIN,
+    LINE2_MAX,
+    PALETTES,
+    SHRINK,
+    is_noun_ending,
+    make_title,
+    split_title,
+    strip_particle,
+)
 
 
-def test_a_short_title_passes_through():
-    assert clean_title("왜 대부분이 실패할까요?") == "왜 대부분이 실패할까요?"
+# ------------------------------------------------------------ 두 줄 가르기
 
 
-def test_line_breaks_and_runs_of_spaces_collapse():
-    assert clean_title("여러   공백과\n줄바꿈") == "여러 공백과 줄바꿈"
+@pytest.mark.parametrize(
+    "text, line1, line2",
+    [
+        ("학습코칭 선택한 이유", "학습코칭", "선택한 이유"),
+        ("수능 D-30 국어 공부법", "수능 D-30", "국어 공부법"),
+        ("부모님 잔소리 아이한테 하지마세요", "부모님 잔소리", "아이한테 하지마세요"),
+        ("올해 고3/N수 정말 대단한 이유", "올해 고3/N수", "정말 대단한 이유"),
+    ],
+)
+def test_reference_titles_split_the_way_the_samples_do(text, line1, line2):
+    title = make_title(text)
+    assert (title.line1, title.line2) == (line1, line2)
 
 
-def test_a_trailing_period_is_dropped():
-    assert clean_title("순서가 가장 중요합니다.") == "순서가 가장 중요합니다"
+def test_an_explicit_line_break_is_respected():
+    title = make_title("중학생 필독서\n추천도서 3종")
+    assert title.line1 == "중학생 필독서"
+    assert title.line2 == "추천도서 3종"
 
 
-def test_a_question_mark_survives():
-    """물음표는 후킹이라 남긴다."""
-    assert clean_title("정말 그럴까요?").endswith("?")
+def test_a_single_word_becomes_one_line():
+    title = make_title("학습코칭")
+    assert title.line1 == "학습코칭"
+    assert title.line2 == ""
 
 
-def test_an_exclamation_mark_survives():
-    assert clean_title("이건 꼭 보세요!").endswith("!")
+def test_the_split_prefers_the_recommended_line_lengths():
+    line1, line2 = split_title("초보 마케터 필수 툴 3가지")
+    assert LINE1_MIN <= len(line1) <= LINE1_MAX + 2
+    assert len(line2) <= LINE2_MAX + 2
+
+
+# -------------------------------------------------------- 명사형 종결 규칙
+
+
+@pytest.mark.parametrize("line", ["선택한 이유", "국어 공부법", "필수 공부 5가지",
+                                  "추천도서 3종", "매출 3배 비결"])
+def test_noun_endings_pass(line):
+    assert is_noun_ending(line)
+
+
+@pytest.mark.parametrize("line", ["공부를 합니다", "꼭 해보세요", "이렇게 하세요",
+                                  "정말 좋아요"])
+def test_verb_endings_are_flagged(line):
+    """썸네일에서 동사 서술형은 길고 약하다."""
+    assert not is_noun_ending(line)
+
+
+def test_a_question_mark_does_not_hide_a_verb_ending():
+    assert not is_noun_ending("이렇게 하세요?")
+
+
+def test_a_verb_ending_shows_up_as_a_warning():
+    title = make_title("공부법 지금 바로 해보세요")
+    assert any("동사 서술형" in note for note in title.warnings)
+
+
+def test_a_clean_title_has_no_warnings():
+    assert make_title("학습코칭 선택한 이유").warnings == []
+
+
+def test_trailing_particles_are_stripped_from_the_first_line():
+    assert strip_particle("학습코칭을") == "학습코칭"
+    assert strip_particle("공부의") == "공부"
+
+
+def test_stripping_never_leaves_a_single_character():
+    """'수의' 에서 조사를 떼면 '수' 한 글자만 남아 뜻이 사라진다."""
+    assert strip_particle("수의") == "수의"
+
+
+# ------------------------------------------------------------ 크기 계층
+
+
+def test_two_short_lines_stay_the_same_size():
+    title = make_title("학습코칭 선택한 이유")
+    assert not title.shrink_line2
+    assert title.line2_scale == 1.0
+
+
+def test_a_long_second_line_is_shrunk():
+    title = make_title("부모님 잔소리 아이한테 하지마세요")
+    assert len(title.line2) >= EXPAND_THRESHOLD
+    assert title.line2_scale == SHRINK
+
+
+def test_a_second_line_much_longer_than_the_first_is_shrunk():
+    title = make_title("맞팔 노가다 계정 망치는 지름길")
+    assert title.line2_scale == SHRINK
+
+
+def test_a_single_line_title_is_never_shrunk():
+    assert make_title("학습코칭").line2_scale == 1.0
+
+
+# -------------------------------------------------------------- 팔레트
+
+
+def test_the_two_offered_palettes_are_green_and_red():
+    assert set(PALETTES) == {"green", "red"}
+
+
+def test_the_first_line_takes_the_accent_colour():
+    assert make_title("학습코칭 선택한 이유", "green").palette.accent == "#22C55E"
+    assert make_title("학습코칭 선택한 이유", "red").palette.accent == "#EF4444"
+
+
+def test_the_second_line_is_white_in_both_palettes():
+    for name in PALETTES:
+        assert make_title("학습코칭 선택한 이유", name).palette.plain == "#FFFFFF"
+
+
+def test_the_stroke_is_black_so_it_separates_from_any_clothing():
+    for name in PALETTES:
+        assert make_title("학습코칭 선택한 이유", name).palette.stroke == "#000000"
+
+
+def test_an_unknown_palette_falls_back_rather_than_crashing():
+    assert make_title("학습코칭 선택한 이유", "무지개").palette.name in PALETTES
+
+
+# -------------------------------------------------------------- 정리 규칙
 
 
 def test_wrapping_quotes_are_stripped():
-    assert clean_title('"이것만 알면 됩니다"') == "이것만 알면 됩니다"
+    assert make_title('"학습코칭 선택한 이유"').line1 == "학습코칭"
 
 
-def test_wrapping_brackets_are_stripped():
-    assert clean_title("(괄호로 감쌈)") == "괄호로 감쌈"
+def test_a_trailing_period_is_dropped():
+    assert not make_title("학습코칭 선택한 이유.").line2.endswith(".")
 
 
-def test_nested_wrappers_are_stripped():
-    assert clean_title('“(이중으로 감쌈)”') == "이중으로 감쌈"
+def test_runs_of_whitespace_collapse():
+    assert make_title("학습코칭   선택한  이유").line2 == "선택한 이유"
 
 
-def test_a_long_title_is_cut_at_a_word_boundary():
-    title = clean_title("테슬라 공중부양 영상 만들기 전 무조건 알고 가세요", max_chars=16)
-    assert len(title) <= 16
-    assert title.endswith("…")
-    # 어절 중간에서 잘리지 않았는지.
-    assert not title[:-1].rstrip().endswith(("공중부", "만들"))
-
-
-def test_the_default_budget_is_short_enough_to_scan():
-    assert DEFAULT_MAX_CHARS <= 24
-
-
-def test_a_single_long_word_is_cut_by_characters():
-    title = clean_title("정말" * 20, max_chars=10)
-    assert len(title) <= 10
-
-
-def test_an_empty_title_stays_empty():
+def test_an_empty_title_is_none():
     """빈 텍스트 세그먼트는 캡컷에서 빈 상자로 남는다."""
-    assert clean_title("") == ""
-    assert clean_title("   ") == ""
-    assert clean_title('""') == ""
-    assert clean_title("...") == ""
+    assert make_title("") is None
+    assert make_title("   ") is None
+    assert make_title("...") is None
 
 
-def test_punctuation_only_titles_are_dropped():
-    assert clean_title("…") == ""
-    assert clean_title("-- ") == ""
+def test_an_over_long_title_is_trimmed_at_a_word_boundary():
+    title = make_title("초보 마케터 알아두면 정말 쓸모 있는 필수 툴 10가지", max_chars=16)
+    assert len(title.line1) + len(title.line2) <= 16
+    assert "  " not in title.text
 
 
-def test_a_tiny_budget_does_not_crash():
-    assert len(clean_title("아주 긴 제목입니다", max_chars=3)) <= 3
+def test_the_rendered_text_is_two_lines():
+    assert make_title("학습코칭 선택한 이유").text == "학습코칭\n선택한 이유"

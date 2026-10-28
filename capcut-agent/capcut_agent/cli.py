@@ -23,6 +23,8 @@ from pathlib import Path
 from . import storage
 from .draft import (
     SPEECH_Y_PX,
+    TITLE_SECONDS,
+    TITLE_X_PX,
     TITLE_Y_PX,
     DraftBuilder,
     SubtitleStyle,
@@ -50,7 +52,7 @@ from .silence import (
 )
 from .subtitle import Word, auto_max_chars, cues_from_words, fill_gaps, to_srt
 from .title import DEFAULT_MAX_CHARS as TITLE_MAX_CHARS
-from .title import clean_title
+from .title import PALETTES, make_title
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
 SUBCOMMANDS = ("check", "doctor", "cut", "caption", "shorts", "build", "serve",
@@ -150,8 +152,16 @@ def build_parser() -> argparse.ArgumentParser:
                          help="제목 자막 세로 위치 (캔버스 픽셀). 기본 %(default)s")
     caption.add_argument("--no-title", action="store_true", help="제목 자막 없이")
     caption.add_argument("--title-max-chars", type=int, default=TITLE_MAX_CHARS,
-                         help="제목 최대 글자 수 (기본 %(default)s). 넘으면 "
-                              "어절 경계에서 자릅니다.")
+                         help="제목 두 줄 합계 최대 글자 수 (기본 %(default)s)")
+    caption.add_argument("--title-palette", choices=sorted(PALETTES),
+                         default="green",
+                         help="제목 2색 조합 (기본 %(default)s). 1행 강조색 + "
+                              "2행 흰색, 외곽선은 검정.")
+    caption.add_argument("--title-x", type=float, default=TITLE_X_PX,
+                         help="제목 가로 위치 (캔버스 픽셀, 중앙 0). 기본 "
+                              "%(default)s — 인물 얼굴을 피해 살짝 왼쪽.")
+    caption.add_argument("--title-seconds", type=float, default=TITLE_SECONDS,
+                         help="제목이 떠 있는 시간, 초 (기본 %(default)s)")
     caption.add_argument("--media-mode",
                          choices=("auto", "link", "copy", "none"),
                          help="미디어를 드래프트 폴더로 들이는 방식. macOS 는 "
@@ -512,27 +522,63 @@ def caption_one(video: Path, workspace, args) -> int:
             cues, until=builder.timeline_us / 1_000_000, boundaries=boundaries
         )
 
+    title = None
+    if not args.no_title:
+        raw_title = args.title or representative_line(transcript)
+        title = make_title(raw_title, args.title_palette, args.title_max_chars)
+
+    # 제목이 떠 있는 동안에는 말하는 자막을 띄우지 않는다. 두 덩어리가 겹치면
+    # 화면이 무너지고, 썸네일로 쓸 첫 장면이 지저분해진다.
+    title_span = None
+    if title is not None:
+        title_span = (
+            0.0, min(args.title_seconds, builder.timeline_us / 1_000_000)
+        )
+        kept_cues = [
+            cue for cue in cues
+            if cue.end <= title_span[0] or cue.start >= title_span[1]
+        ]
+        if len(kept_cues) != len(cues):
+            print(f"  … 제목 구간({title_span[1]:.1f}s)과 겹친 자막 "
+                  f"{len(cues) - len(kept_cues)}장을 뺐습니다")
+        cues = kept_cues
+
     height = builder.canvas.height
+    width = builder.canvas.width
     speech_style = SubtitleStyle.from_pixels(
         args.speech_y, height, font_size=args.font_size, motion=args.motion
     )
     _warn_offscreen("말하는 자막", args.speech_y, height)
     builder.add_subtitles(cues, speech_style)
 
-    title = ""
+    if title is not None and title_span is not None:
+        _warn_offscreen("제목 자막", args.title_y, height)
+        builder.add_title(
+            title,
+            SubtitleStyle.from_pixels(
+                args.title_y, height, args.title_x, width,
+                font_size=args.font_size, motion=args.motion,
+            ),
+            start=title_span[0], end=title_span[1],
+        )
+        for note in title.warnings:
+            print(f"  ⚠ 제목 {note}", file=sys.stderr)
+
+    title = None
     if not args.no_title:
         raw_title = args.title or representative_line(transcript)
-        title = clean_title(raw_title, args.title_max_chars)
-        if title:
-            _warn_offscreen("제목 자막", args.title_y, height)
-            builder.add_title(
-                title,
-                SubtitleStyle.from_pixels(
-                    args.title_y, height,
-                    font_size=args.font_size, motion=args.motion,
-                ),
-                max_chars=args.title_max_chars,
-            )
+        title = make_title(raw_title, args.title_palette, args.title_max_chars)
+
+    # 제목이 떠 있는 동안에는 말하는 자막을 띄우지 않는다. 두 덩어리가
+    # 겹치면 화면이 무너지고, 썸네일로 쓸 첫 장면이 지저분해진다.
+    title_span = None
+    if title is not None:
+        title_span = (0.0, min(args.title_seconds, builder.timeline_us / 1_000_000))
+        cues = [c for c in cues if c.end <= title_span[0] or c.start >= title_span[1]]
+        if not cues:
+            print("  … 제목 구간에 가려 말하는 자막이 모두 빠졌습니다", file=sys.stderr)
+
+    height = builder.canvas.height
 
     mode = args.media_mode or default_media_mode()
     folder = builder.write(resolve_draft_root(args.draft_dir), media_mode=mode)
@@ -545,8 +591,9 @@ def caption_one(video: Path, workspace, args) -> int:
     print(f"캔버스    : {builder.canvas.width}x{builder.canvas.height}")
     print(f"문장       : {len(transcript.segments)}개 → 자막 {len(cues)}장 "
           f"(한 줄 {max_chars}자, 모션 {args.motion})")
-    if title:
-        print(f"제목      : {title}")
+    if title is not None:
+        print(f"제목      : {title.line1} / {title.line2}"
+              f"  ({args.title_palette}, 2행 {title.line2_scale*100:.0f}%)")
     if mode != "none":
         print(f"미디어     : 드래프트 폴더로 반입 ({mode}) — 샌드박스 대응")
     print(f"대본      : {script_path}")
@@ -582,7 +629,13 @@ def caption_one(video: Path, workspace, args) -> int:
             "빈틈메움": not args.no_fill_gaps,
             "컷으로버린단어": dropped,
             "말하는자막Ypx": args.speech_y,
-            "제목": title or None, "제목Ypx": args.title_y if title else None,
+            "제목": title.text if title else None,
+            "제목1행": title.line1 if title else None,
+            "제목2행": title.line2 if title else None,
+            "제목팔레트": args.title_palette if title else None,
+            "제목Ypx": args.title_y if title else None,
+            "제목Xpx": args.title_x if title else None,
+            "제목초": args.title_seconds if title else None,
         },
         "캔버스": f"{builder.canvas.width}x{builder.canvas.height}",
         "미디어반입": mode,

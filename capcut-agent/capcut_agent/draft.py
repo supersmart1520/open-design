@@ -48,7 +48,7 @@ from .paths import TIMELINE_FILENAMES
 from .silence import Range
 from .subtitle import SubtitleCue
 from .title import DEFAULT_MAX_CHARS as TITLE_MAX_CHARS
-from .title import clean_title
+from .title import Title
 
 #: 캡컷 타임라인은 전부 마이크로초 정수다.
 US = 1_000_000
@@ -105,6 +105,17 @@ def hex_to_rgb(value: str) -> list[float]:
 SPEECH_Y_PX = -850
 #: 제목 자막의 기본 세로 위치 (캔버스 픽셀).
 TITLE_Y_PX = 1400
+#: 제목의 기본 가로 위치 (캔버스 픽셀, 중앙이 0).
+#: 가로 3분할에서 텍스트 덩어리가 2단 끝선(720px) 안쪽에 앉도록 살짝 왼쪽으로 민다.
+#: 인물은 보통 2~3단에 있으므로 얼굴과 제스처를 가리지 않는다.
+TITLE_X_PX = -30
+#: 제목이 떠 있는 기본 시간 (초). 썸네일 후킹이라 길 필요가 없다.
+TITLE_SECONDS = 3.0
+
+
+def x_px_to_normalized(pixels: float, canvas_width: int) -> float:
+    half = max(canvas_width, 1) / 2
+    return pixels / half
 
 
 def y_px_to_normalized(pixels: float, canvas_height: int) -> float:
@@ -193,10 +204,15 @@ class SubtitleStyle:
 
     @classmethod
     def from_pixels(
-        cls, y_px: float, canvas_height: int, **kwargs
+        cls, y_px: float, canvas_height: int,
+        x_px: float = 0.0, canvas_width: int = 1080, **kwargs
     ) -> SubtitleStyle:
         """캡컷 UI 의 픽셀 값으로 스타일을 만든다."""
-        return cls(transform_y=y_px_to_normalized(y_px, canvas_height), **kwargs)
+        return cls(
+            transform_y=y_px_to_normalized(y_px, canvas_height),
+            transform_x=x_px_to_normalized(x_px, canvas_width),
+            **kwargs,
+        )
 
 
 #: 드래프트 폴더 안에서 미디어를 두는 자리.
@@ -351,33 +367,40 @@ class DraftBuilder:
             "video_id": "", "wave_points": [],
         }
 
-    def _text_material(self, cue: SubtitleCue, style: SubtitleStyle, material_id: str) -> dict:
-        content = json.dumps(
-            {
-                "styles": [
-                    {
-                        "fill": {
-                            "content": {
-                                "render_type": "solid",
-                                "solid": {"color": hex_to_rgb(style.color)},
-                            }
-                        },
-                        "font": {"id": "", "path": ""},
-                        "range": [0, len(cue.text)],
-                        "size": style.font_size,
-                        "strokes": [
-                            {
-                                "content": {
-                                    "render_type": "solid",
-                                    "solid": {"color": hex_to_rgb(style.stroke_color)},
-                                },
-                                "width": style.stroke_width,
-                            }
-                        ],
-                    }
-                ],
-                "text": cue.text,
+    @staticmethod
+    def _style_range(start: int, end: int, color: str, size: float,
+                     stroke_color: str, stroke_width: float) -> dict:
+        return {
+            "fill": {
+                "content": {
+                    "render_type": "solid",
+                    "solid": {"color": hex_to_rgb(color)},
+                }
             },
+            "font": {"id": "", "path": ""},
+            "range": [start, end],
+            "size": size,
+            "strokes": [
+                {
+                    "content": {
+                        "render_type": "solid",
+                        "solid": {"color": hex_to_rgb(stroke_color)},
+                    },
+                    "width": stroke_width,
+                }
+            ],
+        }
+
+    def _text_material(self, cue: SubtitleCue, style: SubtitleStyle, material_id: str,
+                       ranges: list[dict] | None = None) -> dict:
+        styles = ranges or [
+            self._style_range(
+                0, len(cue.text), style.color, style.font_size,
+                style.stroke_color, style.stroke_width,
+            )
+        ]
+        content = json.dumps(
+            {"styles": styles, "text": cue.text},
             ensure_ascii=False,
             separators=(",", ":"),
         )
@@ -589,33 +612,57 @@ class DraftBuilder:
 
     def add_title(
         self,
-        text: str,
+        title: Title,
         style: SubtitleStyle | None = None,
         start: float = 0.0,
         end: float | None = None,
-        max_chars: int = TITLE_MAX_CHARS,
-    ) -> None:
-        """영상을 대표하는 제목 한 장. 영상당 하나, 한 줄.
+    ) -> tuple[float, float] | None:
+        """썸네일 제목 한 장. 두 줄, 두 색, 두 크기.
 
-        말하는 자막과 **같은 텍스트 트랙에 섞지 않는다.** 위치가 달라
-        한 트랙에 두면 캡컷 안에서 한꺼번에 옮기기가 불편해진다.
+        1행은 강조색으로 시선을 선점하고, 2행은 흰색으로 받는다. 2행이 길면
+        80% 로 줄여 1행이 헤드라인처럼 뜨게 한다 — 한 덩어리로 묶여 보이도록.
+
+        말하는 자막과 **같은 텍스트 트랙에 섞지 않는다.** 위치도 색도 달라
+        한 트랙에 두면 캡컷 안에서 따로 손보기가 불편해진다.
+
+        차지한 구간 (start, end) 를 돌려준다. 그 구간의 말하는 자막은
+        호출부가 지운다 — 제목이 떠 있는 동안 다른 자막이 겹치면 안 된다.
         """
-        line = clean_title(text, max_chars)
-        if not line:
-            # 빈 텍스트 세그먼트는 캡컷에서 빈 상자로 남는다.
-            return
+        text = title.text
+        if not text:
+            return None
         if end is None:
-            end = max(self.timeline_us / US, start + 1.0)
+            end = min(start + TITLE_SECONDS, max(self.timeline_us / US, start + 1.0))
         if end <= start:
-            return
+            return None
+
         assert self.canvas is not None
         style = style or SubtitleStyle.from_pixels(TITLE_Y_PX, self.canvas.height)
-        cue = SubtitleCue(start, end, line)
+        palette = title.palette
+        base = style.font_size
+
+        line1_end = len(title.line1)
+        ranges = [self._style_range(
+            0, line1_end, palette.accent, base,
+            palette.stroke, style.stroke_width,
+        )]
+        if title.line2:
+            # 줄바꿈 다음부터 2행. 색과 크기가 모두 다르다.
+            ranges.append(self._style_range(
+                line1_end + 1, len(text), palette.plain,
+                round(base * title.line2_scale, 2),
+                palette.stroke, style.stroke_width,
+            ))
+
+        cue = SubtitleCue(start, end, text)
         material_id = new_id()
-        self._materials["texts"].append(self._text_material(cue, style, material_id))
+        self._materials["texts"].append(
+            self._text_material(cue, style, material_id, ranges)
+        )
         self._title_segments.append(
             self._text_segment(cue, style, material_id, _TITLE_RENDER_BASE)
         )
+        return start, end
 
     def _video_segment(
         self, material_id: str, source_start_us: int, length_us: int,
