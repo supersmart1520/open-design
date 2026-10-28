@@ -300,6 +300,8 @@ def test_mac_launcher_hunts_for_an_importable_arch():
     # 사라지는 것처럼 보이는데, 지금까지는 아무 말도 하지 않았다.
     assert "앱이 바로 종료되었습니다" in script
     assert "ELAPSED -lt 5" in script
+    # 떴다가 닫힌 것은 알리지 않는다. 창을 금방 닫는 건 잘못이 아니다.
+    assert "__CAPCUT_APP_UP__" in script
 
 
 def test_window_note_names_the_actual_python():

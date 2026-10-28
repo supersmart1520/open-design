@@ -21,6 +21,10 @@ from pathlib import Path
 #: 서버가 뜰 때까지 기다리는 한계 (초).
 STARTUP_TIMEOUT = 20.0
 
+#: 기록에 남기는 표식. 런처가 이걸 보고 "떴다가 닫힌 것" 과 "뜨지도 못한
+#: 것" 을 가른다. 창을 금방 닫는 건 잘못이 아니므로 알리면 안 된다.
+UP_MARKER = "__CAPCUT_APP_UP__"
+
 WINDOW_TITLE = "캡컷 에이전트"
 WINDOW_SIZE = (1080, 820)
 
@@ -118,6 +122,8 @@ def run(workspace: Path, draft_dir: str | None = None,
         server.stop()
         on_message("서버가 뜨지 않았습니다.")
         return 1
+
+    on_message(UP_MARKER)
 
     try:
         how = open_window(server.url)
