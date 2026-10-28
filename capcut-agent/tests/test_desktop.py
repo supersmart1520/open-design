@@ -105,3 +105,39 @@ def test_run_falls_back_instead_of_exiting(monkeypatch, tmp_path):
     assert desktop.run(tmp_path, port=0, on_message=said.append) == 0
     assert len(opened) == 1, "다른 방법으로 열지 않았습니다"
     assert any(desktop.UP_MARKER in line for line in said), "표식이 없습니다"
+
+
+# --- 독에 뜨는 이름 ------------------------------------------------------------
+#
+# venv 의 파이썬은 앱 번들이 아니다. 그냥 띄우면 macOS 가 "Python" 이라고
+# 부른다. 사용자는 캡컷 에이전트를 찾는데 Python 이 떠 있으니 못 찾는다.
+
+
+def test_branding_is_optional(monkeypatch):
+    # AppKit 이 없는 곳(리눅스·CI)에서도 조용히 넘어가야 한다. 이름표는
+    # 창보다 덜 중요하다 — 여기서 터지면 창조차 못 띄운다.
+    assert desktop.brand_process() is False
+
+
+def test_branding_uses_the_bundled_icon():
+    assert desktop.ICON.is_file(), "아이콘이 패키지에 없습니다"
+    assert desktop.ICON.read_bytes()[:4] == b"icns"
+
+
+def test_native_window_is_branded_before_it_opens(monkeypatch):
+    """창이 뜬 뒤에 이름을 바꾸면 이미 Python 으로 보인 뒤다."""
+    import sys
+    import types
+
+    order = []
+
+    fake = types.ModuleType("webview")
+    fake.create_window = lambda *a, **kw: order.append("create")
+    fake.start = lambda *a, **kw: order.append("start")
+    monkeypatch.setitem(sys.modules, "webview", fake)
+    monkeypatch.setattr(desktop, "brand_process",
+                        lambda *a, **kw: order.append("brand") or True)
+
+    desktop.open_native("http://x")
+
+    assert order == ["brand", "create", "start"]

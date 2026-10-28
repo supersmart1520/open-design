@@ -131,6 +131,41 @@ def open_fallback(url: str) -> str:
     return "browser"
 
 
+#: 번들에 같이 넣는 아이콘. 독에 띄울 때도 같은 걸 쓴다.
+ICON = Path(__file__).resolve().parent / "assets" / "appicon.icns"
+
+
+def brand_process(title: str = WINDOW_TITLE, icon: Path = ICON) -> bool:
+    """독과 메뉴 막대에 이름과 아이콘을 입힌다.
+
+    venv 의 파이썬은 앱 번들이 아니다. 그래서 GUI 를 띄우면 macOS 가
+    파이썬 프레임워크를 앱으로 보고 **"Python"** 이라고 부른다. 사용자는
+    캡컷 에이전트를 찾는데 Python 이 떠 있으니 "안 열린다" 가 된다.
+
+    실패해도 창은 뜬다. 이름표는 창보다 덜 중요하므로 조용히 넘어간다.
+    """
+    try:
+        from AppKit import NSApplication, NSImage
+        from Foundation import NSBundle
+    except ImportError:
+        return False
+
+    try:
+        bundle = NSBundle.mainBundle()
+        info = bundle.localizedInfoDictionary() or bundle.infoDictionary()
+        if info is not None:
+            info["CFBundleName"] = title
+            info["CFBundleDisplayName"] = title
+
+        if icon.is_file():
+            image = NSImage.alloc().initWithContentsOfFile_(str(icon))
+            if image is not None:
+                NSApplication.sharedApplication().setApplicationIconImage_(image)
+    except Exception:
+        return False
+    return True
+
+
 def open_native(url: str) -> float | None:
     """`pywebview` 로 창을 띄우고 **열려 있던 시간**을 돌려준다.
 
@@ -142,6 +177,8 @@ def open_native(url: str) -> float | None:
         import webview  # type: ignore[import-not-found]
     except ImportError:
         return None
+
+    brand_process()
 
     started = time.monotonic()
     try:
