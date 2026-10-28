@@ -1007,6 +1007,7 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
   <key>CFBundleShortVersionString</key><string>{version}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleExecutable</key><string>launch</string>
+  <key>CFBundleIconFile</key><string>appicon</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>
@@ -1165,6 +1166,12 @@ def run_install_app(args) -> int:
         (bundle / "Contents" / "Info.plist").write_text(
             _PLIST.format(version=__version__), encoding="utf-8"
         )
+        icon = Path(__file__).resolve().parent / "assets" / "appicon.icns"
+        if icon.is_file():
+            resources = bundle / "Contents" / "Resources"
+            resources.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(icon, resources / "appicon.icns")
+
         launcher = macos / "launch"
         launcher.write_text(_mac_launcher(package_dir, python), encoding="utf-8")
         launcher.chmod(0o755)

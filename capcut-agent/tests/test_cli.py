@@ -306,3 +306,50 @@ def test_window_note_names_the_actual_python():
     venv = "/Users/x/CapCutAgent/venv/bin/python"
     assert venv in window_note(venv)
     assert "python3 -m pip" not in window_note(venv)
+
+
+# --- 앱 아이콘 ----------------------------------------------------------------
+
+
+def test_bundle_carries_the_icon(tmp_path, monkeypatch):
+    import plistlib
+
+    from capcut_agent import cli
+
+    monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
+    cli.run_install_app(
+        cli.build_parser().parse_args(["install-app", "--dest", str(tmp_path)])
+    )
+
+    bundle = tmp_path / "캡컷 에이전트.app"
+    icon = bundle / "Contents" / "Resources" / "appicon.icns"
+    assert icon.is_file(), "Resources 에 아이콘이 없습니다"
+    assert icon.read_bytes()[:4] == b"icns"
+
+    # 파일만 있고 plist 가 안 가리키면 맥은 기본 아이콘을 보여준다.
+    plist = plistlib.loads((bundle / "Contents" / "Info.plist").read_bytes())
+    assert plist["CFBundleIconFile"] == "appicon"
+
+
+def test_shipped_icns_has_the_sizes_macos_looks_for():
+    import struct
+
+    from capcut_agent import cli
+
+    data = (Path(cli.__file__).parent / "assets" / "appicon.icns").read_bytes()
+    assert data[:4] == b"icns"
+    assert struct.unpack(">I", data[4:8])[0] == len(data), "전체 길이가 안 맞습니다"
+
+    kinds, offset = [], 8
+    while offset < len(data):
+        kind = data[offset:offset + 4]
+        size = struct.unpack(">I", data[offset + 4:offset + 8])[0]
+        assert size >= 8, "청크 길이가 깨졌습니다"
+        assert data[offset + 8:offset + 16] == b"\x89PNG\r\n\x1a\n", f"{kind}: PNG 아님"
+        kinds.append(kind)
+        offset += size
+    assert offset == len(data), "청크 길이 합이 전체와 다릅니다"
+
+    # 독·파인더·전환창이 각각 다른 크기를 집어간다.
+    for needed in (b"ic11", b"ic07", b"ic08", b"ic09", b"ic10"):
+        assert needed in kinds, f"{needed} 가 없습니다"
