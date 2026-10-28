@@ -33,13 +33,7 @@ from .draft import (
 )
 from .env_check import DRAFT_CHECK_NAME, format_report, run_checks
 from .framing import SHORTS
-from .highlight import (
-    load_candidates,
-    propose,
-    representative_line,
-    save_candidates,
-    selected,
-)
+from .highlight import load_candidates, propose, save_candidates, selected
 from .media import MediaInfo, detect_silence_raw, probe
 from .paths import resolve_draft_root
 from .silence import (
@@ -147,9 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--speech-y", type=float, default=SPEECH_Y_PX,
                          help="말하는 자막 세로 위치 (캔버스 픽셀, 중앙 0, 위가 양수). "
                               "기본 %(default)s")
-    caption.add_argument("--title", help="제목 자막 문구. 생략하면 대본에서 뽑는다.")
+    caption.add_argument("--title",
+                         help="제목 자막 문구. **주지 않으면 제목을 넣지 않는다.** "
+                              "두 줄은 공백 또는 줄바꿈으로 가른다.")
     caption.add_argument("--title-y", type=float, default=TITLE_Y_PX,
-                         help="제목 자막 세로 위치 (캔버스 픽셀). 기본 %(default)s")
+                         help="제목 세로 위치 (캔버스 픽셀, 중앙 0)")
     caption.add_argument("--no-title", action="store_true", help="제목 자막 없이")
     caption.add_argument("--title-max-chars", type=int, default=TITLE_MAX_CHARS,
                          help="제목 두 줄 합계 최대 글자 수 (기본 %(default)s)")
@@ -158,8 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="제목 2색 조합 (기본 %(default)s). 1행 강조색 + "
                               "2행 흰색, 외곽선은 검정.")
     caption.add_argument("--title-x", type=float, default=TITLE_X_PX,
-                         help="제목 가로 위치 (캔버스 픽셀, 중앙 0). 기본 "
-                              "%(default)s — 인물 얼굴을 피해 살짝 왼쪽.")
+                         help="제목 가로 위치 (캔버스 픽셀, 중앙 0)")
     caption.add_argument("--title-seconds", type=float, default=TITLE_SECONDS,
                          help="제목이 떠 있는 시간, 초 (기본 %(default)s)")
     caption.add_argument("--media-mode",
@@ -522,10 +517,12 @@ def caption_one(video: Path, workspace, args) -> int:
             cues, until=builder.timeline_us / 1_000_000, boundaries=boundaries
         )
 
+    # 제목은 **직접 준 것만** 쓴다. 대본에서 뽑은 문구는 썸네일 카피로
+    # 쓸 만하지 않았다 — 들은 말을 줄인 것이지 손가락을 멈추게 하는 문구가
+    # 아니다. 레퍼런스 문법에 맞는 제목은 사람이 쓴다.
     title = None
-    if not args.no_title:
-        raw_title = args.title or representative_line(transcript)
-        title = make_title(raw_title, args.title_palette, args.title_max_chars)
+    if args.title and not args.no_title:
+        title = make_title(args.title, args.title_palette, args.title_max_chars)
 
     # 제목이 떠 있는 동안에는 말하는 자막을 띄우지 않는다. 두 덩어리가 겹치면
     # 화면이 무너지고, 썸네일로 쓸 첫 장면이 지저분해진다.
@@ -564,10 +561,12 @@ def caption_one(video: Path, workspace, args) -> int:
         for note in title.warnings:
             print(f"  ⚠ 제목 {note}", file=sys.stderr)
 
+    # 제목은 **직접 준 것만** 쓴다. 대본에서 뽑은 문구는 썸네일 카피로
+    # 쓸 만하지 않았다 — 들은 말을 줄인 것이지 손가락을 멈추게 하는 문구가
+    # 아니다. 레퍼런스 문법에 맞는 제목은 사람이 쓴다.
     title = None
-    if not args.no_title:
-        raw_title = args.title or representative_line(transcript)
-        title = make_title(raw_title, args.title_palette, args.title_max_chars)
+    if args.title and not args.no_title:
+        title = make_title(args.title, args.title_palette, args.title_max_chars)
 
     # 제목이 떠 있는 동안에는 말하는 자막을 띄우지 않는다. 두 덩어리가
     # 겹치면 화면이 무너지고, 썸네일로 쓸 첫 장면이 지저분해진다.

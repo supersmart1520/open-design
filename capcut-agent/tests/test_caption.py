@@ -310,8 +310,14 @@ def _title_track(draft_root: Path) -> dict:
     return min(tracks, key=lambda t: len(t["segments"]))
 
 
-def test_a_title_is_added_by_default(stub_probe, ws, draft_root, video):
+def test_no_title_unless_one_is_given(stub_probe, ws, draft_root, video):
+    """대본에서 뽑은 문구는 썸네일 카피가 못 된다. 제목은 사람이 쓴다."""
     _run(ws, draft_root, video)
+    assert len(_text_tracks(draft_root)) == 1       # 말하는 자막 트랙만
+
+
+def test_a_given_title_is_added(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유"])
     assert len(_title_track(draft_root)["segments"]) == 1
 
 
@@ -358,10 +364,18 @@ def test_two_short_lines_stay_the_same_size(stub_probe, ws, draft_root, video):
     assert styles[1]["size"] == styles[0]["size"]
 
 
-def test_the_title_sits_left_of_centre(stub_probe, ws, draft_root, video):
-    """인물은 보통 오른쪽에 있다. 얼굴과 제스처를 가리지 않게 살짝 왼쪽."""
+def test_the_title_sits_in_the_centre(stub_probe, ws, draft_root, video):
     _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유"])
-    assert _title_track(draft_root)["segments"][0]["clip"]["transform"]["x"] < 0
+    transform = _title_track(draft_root)["segments"][0]["clip"]["transform"]
+    assert transform["x"] == 0.0
+    assert transform["y"] == 0.0
+
+
+def test_the_title_position_is_still_adjustable(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "학습코칭 선택한 이유",
+                                 "--title-x", "-60", "--title-y", "-270"])
+    transform = _title_track(draft_root)["segments"][0]["clip"]["transform"]
+    assert transform["x"] < 0 and transform["y"] < 0
 
 
 def test_an_explicit_title_wins_over_the_derived_one(stub_probe, ws, draft_root, video):

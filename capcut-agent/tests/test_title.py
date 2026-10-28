@@ -76,9 +76,14 @@ def test_a_question_mark_does_not_hide_a_verb_ending():
     assert not is_noun_ending("이렇게 하세요?")
 
 
-def test_a_verb_ending_shows_up_as_a_warning():
-    title = make_title("공부법 지금 바로 해보세요")
-    assert any("동사 서술형" in note for note in title.warnings)
+def test_a_verb_ending_is_allowed_through():
+    """레퍼런스 썸네일이 "아이한테 하지마세요!" 를 쓰고 실제로 잘 먹힌다.
+
+    판정 함수는 남겨 두되 경고 근거로는 쓰지 않는다.
+    """
+    title = make_title("부모님 잔소리 아이한테 하지마세요")
+    assert not is_noun_ending(title.line2)
+    assert not any("동사" in note for note in title.warnings)
 
 
 def test_a_clean_title_has_no_warnings():

@@ -128,7 +128,12 @@ class Title:
 
     @property
     def warnings(self) -> list[str]:
-        """규칙에서 벗어난 점. 막지는 않고 알려준다."""
+        """규칙에서 벗어난 점. 막지는 않고 알려준다.
+
+        동사 서술형 종결은 **경고하지 않는다.** 레퍼런스 썸네일이
+        "아이한테 하지마세요!" 처럼 쓰고 있고, 실제로 잘 먹힌다.
+        `is_noun_ending()` 은 판정용으로 남겨 두되 경고 근거로는 쓰지 않는다.
+        """
         notes = []
         if not (LINE1_MIN <= len(self.line1) <= LINE1_MAX):
             notes.append(
@@ -138,9 +143,6 @@ class Title:
             notes.append(
                 f"2행 {len(self.line2)}자 (권장 {LINE2_MIN}~{LINE2_MAX})"
             )
-        for number, line in ((1, self.line1), (2, self.line2)):
-            if line and not is_noun_ending(line):
-                notes.append(f"{number}행이 동사 서술형으로 끝남: {line!r}")
         return notes
 
 
