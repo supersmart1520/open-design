@@ -169,6 +169,45 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 
 ---
 
+### 로컬 대시보드 — `serve`
+
+터미널 대신 화면에서 돌립니다. inbox 를 훑어 작업으로 등록하고, 하나씩 편집한 뒤
+**검수 대기** 로 올립니다. 거기서 멈춥니다 — 캡컷에서 재생해 보는 건 사람 몫입니다.
+
+```bash
+python -m pip install fastapi "uvicorn[standard]"
+python -m capcut_agent.cli serve          # http://127.0.0.1:8765
+```
+
+바깥으로 열지 않습니다. 기본 바인딩은 `127.0.0.1` 입니다.
+
+작업 상태는 한 방향으로만 흐릅니다.
+
+```
+대기 ──▶ 편집 중 ──▶ 검수 대기 ──▶ 검수 완료
+            │
+            └──────▶ 실패 ──▶ (다시 대기)
+```
+
+**검수 완료된 작업은 조용히 되돌릴 수 없습니다.** 되돌리려면 명시적으로 재검수로
+보내야 합니다 — 승인 안 된 버전이 올라가는 걸 막기 위해서입니다.
+
+| 엔드포인트 | 하는 일 |
+|---|---|
+| `POST /api/scan` | inbox 를 훑어 새 영상을 작업으로 등록 |
+| `GET /api/jobs` | 작업 목록 |
+| `POST /api/jobs/{id}/approve` | 검수 완료 |
+| `POST /api/jobs/{id}/retry` | 실패한 작업을 다시 대기열로 |
+| `GET /api/events` | SSE — 진행 상황 실시간 |
+| `GET /api/status` | 환경 점검 + 저장소 경로 + 집계 |
+
+작업 기록은 `~/CapCutAgent/jobs.sqlite` 에 남습니다. 서버를 껐다 켜도 유지됩니다.
+
+파이프라인은 **CLI 를 그대로 호출**합니다. 대시보드와 터미널이 서로 다르게
+동작할 일이 없고, 이미 테스트된 경로를 다시 구현하지 않습니다.
+
+---
+
 ### 자막만 달기 — `caption`
 
 컷을 하나도 하지 않고, 전체 영상에 자막 트랙만 얹습니다. **원본을 옮기지도 않습니다.**
@@ -287,7 +326,7 @@ python -m capcut_agent.cli 영상.mp4                  # 서브커맨드 생략 
 | 3단 | **모드 A** — 전사 → 대본 → 후보 추천 → 승인 → 숏폼 드래프트 | **완료 · 캡컷 재생 검증 대기** |
 | 3.5단 | **자막만** (`caption`) — 컷 없이 전체 영상 + 자막 | **완료 · 캡컷 재생 검증 대기** |
 | 4단 | **모드 B** — ElevenLabs 나레이션 + B롤 → 숏폼 드래프트 | 다음 |
-| 5단 | FastAPI + 정적 HTML 1장 (drag/drop + SSE stepper) | 예정 |
+| 5단 | **로컬 대시보드** — FastAPI + 정적 HTML 1장 + SSE | **완료 · 캡컷 재생 검증 대기** |
 | 6단 | 영상 프리뷰 + 보존 구간 사용자 마킹 (`[` / `]` 단축키) | 예정 |
 
 각 단은 **캡컷에서 실제 재생 검증을 통과한 뒤에만** 다음으로 넘어갑니다.
@@ -310,8 +349,14 @@ capcut-agent/
 │   ├── transcribe.py   # 로컬 whisper + 내용 해시 캐시 + ASR 락
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
-│   └── cli.py          # check / cut / caption / shorts / build
-└── tests/              # pytest 225개 — ffmpeg·whisper 없이도 도는 테스트
+│   ├── cli.py          # check / cut / caption / shorts / build / serve
+│   └── web/            # 로컬 대시보드
+│       ├── app.py      #   FastAPI 라우트 + SSE
+│       ├── jobs.py     #   SQLite 작업 저장소 + 상태 전이
+│       ├── worker.py   #   큐를 비우는 단일 스레드 (CLI 를 호출)
+│       ├── events.py   #   SSE 브로커
+│       └── static/     #   화면 한 장
+└── tests/              # pytest 262개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

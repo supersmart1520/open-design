@@ -1,7 +1,14 @@
-# 1단(무음 컷 + 드래프트 생성)은 파이썬 표준 라이브러리만 씁니다.
-# 외부 의존성은 ffmpeg / ffprobe 뿐입니다.
-#
-# 2단(FastAPI + SSE), 3단(whisper) 이 붙을 때 여기에 추가됩니다.
+# CLI (cut / caption / shorts / build) 는 파이썬 표준 라이브러리만 씁니다.
+# 외부 의존은 ffmpeg / ffprobe 뿐입니다.
+
+# 전사 — 트랙에 맞는 쪽만 설치하면 됩니다.
+#   Mac M칩   : pip install mlx-whisper
+#   그 외     : pip install faster-whisper
+
+# 로컬 대시보드 (serve)
+fastapi>=0.110
+uvicorn[standard]>=0.27
 
 # 개발용
 pytest>=8.0
+httpx>=0.27

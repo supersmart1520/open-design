@@ -49,7 +49,7 @@ from .silence import (
 from .subtitle import Word, auto_max_chars, cues_from_words, fill_gaps, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
-SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build")
+SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build", "serve")
 
 
 def _fmt(seconds: float) -> str:
@@ -141,6 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
                          choices=("center", "left", "right", "top", "bottom"),
                          help="--shorts 일 때 남길 쪽")
     caption.add_argument("--srt", action="store_true", help="SRT 도 같이 내보낸다")
+    caption.add_argument("--json", action="store_true",
+                         help="마지막 줄에 결과를 JSON 한 줄로 출력한다 (대시보드용)")
 
     shorts = subparsers.add_parser("shorts", help="전사 → 숏폼 후보 추천")
     shorts.add_argument("video", help="강의 영상 mp4 / mov")
@@ -149,6 +151,12 @@ def build_parser() -> argparse.ArgumentParser:
     shorts.add_argument("--min-seconds", type=float, default=18.0, help="후보 최소 길이")
     shorts.add_argument("--max-seconds", type=float, default=60.0, help="후보 최대 길이")
     shorts.add_argument("--limit", type=int, default=8, help="추천 개수")
+
+    serve = subparsers.add_parser("serve", help="로컬 대시보드 실행")
+    serve.add_argument("--host", default="127.0.0.1",
+                       help="바인딩 주소 (기본 %(default)s — 바깥으로 열지 않는다)")
+    serve.add_argument("--port", type=int, default=8765, help="포트 (기본 %(default)s)")
+    serve.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
 
     build = subparsers.add_parser("build", help="승인한 후보 → 숏폼 드래프트")
     build.add_argument("plan", help="scripts/<이름>.shorts.json")
@@ -482,7 +490,7 @@ def caption_one(video: Path, workspace, args) -> int:
         srt_path.write_text(to_srt(cues), encoding="utf-8")
         print(f"SRT       : {srt_path}")
 
-    storage.write_report(workspace, name, {
+    report = {
         "모드": "caption",
         "생성시각": datetime.now().isoformat(timespec="seconds"),
         "원본": {
@@ -512,7 +520,12 @@ def caption_one(video: Path, workspace, args) -> int:
         "캔버스": f"{builder.canvas.width}x{builder.canvas.height}",
         "미디어반입": mode,
         "드래프트": str(folder),
-    })
+        "대본파일": str(script_path),
+    }
+    storage.write_report(workspace, name, report)
+    if getattr(args, "json", False):
+        # 대시보드가 읽는 줄. 접두사로 찾으므로 사람이 읽는 출력과 섞여도 된다.
+        print("__CAPCUT_JSON__ " + json.dumps(report, ensure_ascii=False))
     return 0
 
 
@@ -769,6 +782,27 @@ def run_build(args, workspace) -> int:
     return 0
 
 
+def run_serve(args, workspace) -> int:
+    """로컬 대시보드. 바깥으로 열지 않는다."""
+    try:
+        import uvicorn
+    except ImportError:
+        print("대시보드에는 추가 패키지가 필요합니다:", file=sys.stderr)
+        print("  python3 -m pip install fastapi 'uvicorn[standard]'", file=sys.stderr)
+        return 1
+
+    from .web.app import create_app
+
+    print(f"저장소    : {workspace.home}")
+    print(f"대시보드  : http://{args.host}:{args.port}")
+    print("종료하려면 Ctrl+C")
+    uvicorn.run(
+        create_app(workspace.home, args.draft_dir),
+        host=args.host, port=args.port, log_level="warning",
+    )
+    return 0
+
+
 def _print_verify_steps() -> None:
     print()
     print("검증 — 여기서부터는 사람이 합니다:")
@@ -801,6 +835,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_shorts(args, workspace)
     if args.command == "build":
         return run_build(args, workspace)
+    if args.command == "serve":
+        return run_serve(args, workspace)
     parser.print_help()
     return 2
 
