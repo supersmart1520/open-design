@@ -8,6 +8,11 @@
         draft_meta_info.json  ← 프로젝트 메타 (여기 tm_duration 이 빠지면 길이 0으로 뜬다)
         draft_virtual_store.json
 
+트랙 셋을 만든다.
+    video  소스 클립 (컷 적용, 필요하면 9:16 크롭)
+    audio  나레이션 / BGM (모드 B)
+    text   자막
+
 지뢰 목록
   1. 타임라인 파일 이름이 버전마다 다르다 → 두 이름으로 같은 내용을 쓴다.
   2. draft_meta_info.json 의 tm_duration(마이크로초)이 없거나 0이면
@@ -16,6 +21,8 @@
      vocal_separation 4종이 없으면 캡컷이 클립을 검은 화면으로 그리거나 죽는다.
   4. 경로는 반드시 절대경로. Windows 는 역슬래시로 저장된다.
   5. 캡컷이 실행 중이면 새 드래프트가 목록에 안 나타난다 → 재시작 안내.
+  6. 원본 이동은 드래프트 생성보다 먼저. 경로가 박혀 들어가므로.
+  7. 자막 세로 위치는 segment.clip.transform.y. 화면 중앙이 0, 아래가 음수.
 """
 
 from __future__ import annotations
@@ -28,12 +35,17 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .framing import Anchor, Canvas, crop_ratio_label, crop_window
 from .media import MediaInfo
 from .paths import TIMELINE_FILENAMES
 from .silence import Range
+from .subtitle import SubtitleCue
 
 #: 캡컷 타임라인은 전부 마이크로초 정수다.
 US = 1_000_000
+
+#: 자막은 영상보다 위에 그려져야 한다. 캡컷이 쓰는 대역을 따른다.
+_TEXT_RENDER_BASE = 14000
 
 
 def new_id() -> str:
@@ -42,6 +54,10 @@ def new_id() -> str:
 
 def _now_us() -> int:
     return int(time.time() * US)
+
+
+def _us(seconds: float) -> int:
+    return int(round(seconds * US))
 
 
 def _native_path(path: Path) -> str:
@@ -66,55 +82,140 @@ def _platform_block() -> dict:
     }
 
 
+def hex_to_rgb(value: str) -> list[float]:
+    """#RRGGBB → [r, g, b] 0~1 실수. 캡컷 텍스트 스타일이 쓰는 형식."""
+    text = value.strip().lstrip("#")
+    if len(text) != 6:
+        raise ValueError(f"#RRGGBB 형식이 아닙니다: {value}")
+    return [int(text[i : i + 2], 16) / 255 for i in (0, 2, 4)]
+
+
+@dataclass
+class SubtitleStyle:
+    """자막 모양. 숏폼 기본값은 1080x1920 에서 읽히도록 맞춰 뒀다."""
+
+    font_size: int = 12
+    color: str = "#FFFFFF"
+    stroke_color: str = "#000000"
+    stroke_width: float = 0.08
+    #: 세로 위치. 캡컷 좌표계는 화면 중앙이 0, 아래가 음수.
+    #: -0.72 는 하단 세이프존(좋아요·프로필 UI) 위쪽이다.
+    transform_y: float = -0.72
+    #: 1 = 가운데 정렬.
+    alignment: int = 1
+    line_max_width: float = 0.82
+    line_spacing: float = 0.02
+
+
+@dataclass
+class AudioClip:
+    """오디오 트랙에 얹을 한 토막."""
+
+    path: Path
+    duration: float
+    target_start: float = 0.0
+    volume: float = 1.0
+    source_start: float = 0.0
+
+
 @dataclass
 class DraftBuilder:
-    media: MediaInfo
-    name: str
+    #: 주 소스. cut / highlight 모드는 이걸 쓴다. 모드 B 는 add_clip 으로 넣는다.
+    media: MediaInfo | None = None
+    name: str = ""
+    #: None 이면 주 소스 해상도를 그대로 쓴다 (크롭 없음).
+    canvas: Canvas | None = None
+    crop_anchor: Anchor = "center"
+    fps: float = 30.0
     draft_id: str = field(default_factory=new_id)
 
-    _video_material_id: str = field(default="", init=False)
+    _video_ids: dict[str, str] = field(default_factory=dict, init=False)
     _segments: list[dict] = field(default_factory=list, init=False)
+    _audio_segments: list[dict] = field(default_factory=list, init=False)
     _text_segments: list[dict] = field(default_factory=list, init=False)
     _materials: dict[str, list[dict]] = field(default_factory=dict, init=False)
-    _timeline_us: int = field(default=0, init=False)
+    _meta_entries: list[dict] = field(default_factory=list, init=False)
+    _video_cursor_us: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self._materials = {
             "videos": [], "audios": [], "texts": [], "canvases": [], "speeds": [],
-            "sound_channel_mappings": [], "vocal_separations": [], "material_animations": [],
+            "sound_channel_mappings": [], "vocal_separations": [],
+            "material_animations": [],
         }
-        self._video_material_id = new_id()
-        self._materials["videos"].append(self._video_material())
+        if self.canvas is None and self.media is not None:
+            # 기존 동작: 소스 해상도를 그대로 캔버스로.
+            self.canvas = Canvas(self.media.width, self.media.height)
+        if self.canvas is None:
+            raise ValueError("canvas 나 media 중 하나는 있어야 합니다.")
+        if self.media is not None:
+            self.fps = self.media.fps
+            self._register_video(self.media)
 
-    # ---------------------------------------------------------------- materials
+    # ------------------------------------------------------------- properties
 
-    def _video_material(self) -> dict:
+    @property
+    def timeline_us(self) -> int:
+        """전체 길이. 비디오·오디오·자막 중 가장 늦게 끝나는 지점."""
+        ends = [self._video_cursor_us]
+        for group in (self._audio_segments, self._text_segments):
+            ends += [
+                s["target_timerange"]["start"] + s["target_timerange"]["duration"]
+                for s in group
+            ]
+        return max(ends) if ends else 0
+
+    @property
+    def is_original_canvas(self) -> bool:
+        return (
+            self.media is not None
+            and self.canvas is not None
+            and self.canvas.width == self.media.width
+            and self.canvas.height == self.media.height
+        )
+
+    # -------------------------------------------------------------- materials
+
+    def _register_video(self, media: MediaInfo) -> str:
+        """영상 머티리얼을 등록하고 id 를 돌려준다. 같은 파일은 한 번만."""
+        key = str(media.path)
+        existing = self._video_ids.get(key)
+        if existing:
+            return existing
+        material_id = new_id()
+        self._video_ids[key] = material_id
+        self._materials["videos"].append(self._video_material(media, material_id))
+        self._meta_entries.append(self._material_meta(media, "video"))
+        return material_id
+
+    def _crop_for(self, media: MediaInfo) -> tuple[dict, str]:
+        assert self.canvas is not None
+        window = crop_window(media.width, media.height, self.canvas, self.crop_anchor)
+        label = "free" if window.is_full_frame else crop_ratio_label(self.canvas)
+        return window.to_capcut(), label
+
+    def _video_material(self, media: MediaInfo, material_id: str) -> dict:
+        crop, crop_label = self._crop_for(media)
         return {
             "audio_fade": None, "cartoon_path": "", "category_id": "",
             "category_name": "local", "check_flag": 62978047,
-            "crop": {
-                "lower_left_x": 0.0, "lower_left_y": 1.0,
-                "lower_right_x": 1.0, "lower_right_y": 1.0,
-                "upper_left_x": 0.0, "upper_left_y": 0.0,
-                "upper_right_x": 1.0, "upper_right_y": 0.0,
-            },
-            "crop_ratio": "free", "crop_scale": 1.0,
-            "duration": self.media.duration_us,
+            "crop": crop, "crop_ratio": crop_label, "crop_scale": 1.0,
+            "duration": media.duration_us,
             "extra_type_option": 0, "formula_id": "", "freeze": None,
-            "has_audio": self.media.has_audio,
-            "height": self.media.height, "id": self._video_material_id,
+            "has_audio": media.has_audio,
+            "height": media.height, "id": material_id,
             "intensifies_audio_path": "", "intensifies_path": "",
             "is_ai_generate_content": False, "is_copyright": False,
             "is_text_edit_overdub": False, "is_unified_beauty_mode": False,
             "local_id": "", "local_material_id": "", "material_id": "",
-            "material_name": self.media.path.name, "material_url": "",
+            "material_name": media.path.name, "material_url": "",
             "matting": {
                 "flag": 0, "has_use_quick_brush": False,
                 "has_use_quick_eraser": False, "interactiveTime": [],
                 "path": "", "strokes": [],
             },
             "media_path": "", "object_locked": None, "origin_material_id": "",
-            "path": _native_path(self.media.path), "picture_from": "none",
+            "path": _native_path(media.path), "picture_from": "none",
             "picture_set_category_id": "", "picture_set_category_name": "",
             "request_id": "", "reverse_intensifies_path": "", "reverse_path": "",
             "smart_motion": None, "source": 0, "source_platform": 0, "stable": None,
@@ -125,52 +226,255 @@ class DraftBuilder:
                 "noise_reduction": None, "path": "", "quality_enhance": None,
                 "time_range": None,
             },
-            "width": self.media.width,
+            "width": media.width,
         }
 
-    def _segment_extras(self) -> list[str]:
-        """세그먼트마다 필요한 부속 머티리얼 4종. 빠지면 캡컷이 렌더를 못 한다."""
-        speed_id, canvas_id, mapping_id, vocal_id = (new_id() for _ in range(4))
+    def _audio_material(self, clip: AudioClip, material_id: str) -> dict:
+        return {
+            "app_id": 0, "category_id": "", "category_name": "local",
+            "check_flag": 1, "duration": _us(clip.duration), "effect_id": "",
+            "formula_id": "", "id": material_id, "intensifies_path": "",
+            "is_ai_clone_tone": False, "is_text_edit_overdub": False,
+            "is_ugc": False, "local_material_id": "", "music_id": "",
+            "name": clip.path.name, "path": _native_path(clip.path),
+            "query": "", "request_id": "", "resource_id": "", "search_id": "",
+            "source_platform": 0, "team_id": "", "text_id": "",
+            "tone_category_id": "", "tone_category_name": "",
+            "tone_effect_id": "", "tone_effect_name": "", "tone_platform": "",
+            "tone_second_category_id": "", "tone_second_category_name": "",
+            "tone_speaker": "", "tone_type": "", "type": "music",
+            "video_id": "", "wave_points": [],
+        }
+
+    def _text_material(self, cue: SubtitleCue, style: SubtitleStyle, material_id: str) -> dict:
+        content = json.dumps(
+            {
+                "styles": [
+                    {
+                        "fill": {
+                            "content": {
+                                "render_type": "solid",
+                                "solid": {"color": hex_to_rgb(style.color)},
+                            }
+                        },
+                        "font": {"id": "", "path": ""},
+                        "range": [0, len(cue.text)],
+                        "size": style.font_size,
+                        "strokes": [
+                            {
+                                "content": {
+                                    "render_type": "solid",
+                                    "solid": {"color": hex_to_rgb(style.stroke_color)},
+                                },
+                                "width": style.stroke_width,
+                            }
+                        ],
+                    }
+                ],
+                "text": cue.text,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return {
+            "add_type": 0, "alignment": style.alignment, "background_alpha": 1.0,
+            "background_color": "", "background_height": 0.14,
+            "background_horizontal_offset": 0.0, "background_round_radius": 0.0,
+            "background_style": 0, "background_vertical_offset": 0.0,
+            "background_width": 0.14, "bold_width": 0.0, "border_alpha": 1.0,
+            "border_color": style.stroke_color, "border_width": style.stroke_width,
+            "check_flag": 7, "combo_info": {"text_templates": []},
+            "content": content, "fixed_height": -1.0, "fixed_width": -1.0,
+            "font_category_id": "", "font_category_name": "", "font_id": "",
+            "font_name": "", "font_path": "", "font_resource_id": "",
+            "font_size": float(style.font_size), "font_source_platform": 0,
+            "font_team_id": "", "font_title": "none", "font_url": "", "fonts": [],
+            "force_apply_line_max_width": False, "global_alpha": 1.0,
+            "group_id": "", "has_shadow": False, "id": material_id,
+            "initial_scale": 1.0, "inner_padding": -1.0, "is_rich_text": False,
+            "italic_degree": 0, "ktv_color": "", "language": "", "layer_weight": 1,
+            "letter_spacing": 0.0, "line_feed": 1,
+            "line_max_width": style.line_max_width,
+            "line_spacing": style.line_spacing,
+            "multi_language_current": "none", "name": "", "original_size": [],
+            "preset_category": "", "preset_category_id": "", "preset_has_set_alpha": False,
+            "preset_index": 0, "preset_name": "", "recognize_task_id": "",
+            "recognize_type": 0, "relevance_segment": [], "shadow_alpha": 0.9,
+            "shadow_angle": -45.0, "shadow_color": "", "shadow_distance": 5.0,
+            "shadow_point": {"x": 0.6, "y": -0.6}, "shadow_smoothing": 0.45,
+            "shape_clip_x": False, "shape_clip_y": False, "style_name": "",
+            "sub_type": 0, "subtitle_keywords": None, "text_alpha": 1.0,
+            "text_color": style.color, "text_curve": None,
+            "text_preset_resource_id": "", "text_size": 30,
+            "text_to_audio_ids": [], "tts_auto_update": False, "type": "text",
+            "typesetting": 0, "underline": False, "underline_offset": 0.22,
+            "underline_width": 0.05, "use_effect_default_color": True,
+            "words": {"end_time": [], "start_time": [], "text": []},
+        }
+
+    def _segment_extras(self, with_canvas: bool = True) -> list[str]:
+        """세그먼트마다 필요한 부속 머티리얼. 빠지면 캡컷이 렌더를 못 한다.
+
+        오디오 세그먼트는 canvas_color 가 필요 없다.
+        """
+        refs: list[str] = []
+        speed_id = new_id()
         self._materials["speeds"].append(
             {"curve_speed": None, "id": speed_id, "mode": 0, "speed": 1.0, "type": "speed"}
         )
-        self._materials["canvases"].append(
-            {"album_image": "", "blur": 0.0, "color": "", "id": canvas_id,
-             "image": "", "image_id": "", "image_name": "", "source_platform": 0,
-             "team_id": "", "type": "canvas_color"}
-        )
+        refs.append(speed_id)
+
+        if with_canvas:
+            canvas_id = new_id()
+            self._materials["canvases"].append(
+                {"album_image": "", "blur": 0.0, "color": "", "id": canvas_id,
+                 "image": "", "image_id": "", "image_name": "", "source_platform": 0,
+                 "team_id": "", "type": "canvas_color"}
+            )
+            refs.append(canvas_id)
+
+        mapping_id = new_id()
         self._materials["sound_channel_mappings"].append(
             {"audio_channel_mapping": 0, "id": mapping_id,
              "is_config_open": False, "type": "none"}
         )
+        refs.append(mapping_id)
+
+        vocal_id = new_id()
         self._materials["vocal_separations"].append(
             {"choice": 0, "id": vocal_id, "production_path": "",
              "removed_sounds": [], "time_range": None, "type": "vocal_separation"}
         )
-        return [speed_id, canvas_id, mapping_id, vocal_id]
+        refs.append(vocal_id)
+        return refs
 
-    # ---------------------------------------------------------------- timeline
+    # --------------------------------------------------------------- timeline
+
+    def add_clip(
+        self,
+        media: MediaInfo,
+        source_start: float,
+        length: float,
+        volume: float = 1.0,
+    ) -> None:
+        """영상 트랙 끝에 클립 한 토막을 붙인다. 모드 B 의 B롤도 이걸 쓴다."""
+        start_us = _us(source_start)
+        length_us = _us(length)
+        if length_us <= 0:
+            return
+        # 소스 끝을 넘어가는 요청은 캡컷에서 클립이 사라지는 원인이 된다.
+        length_us = min(length_us, media.duration_us - start_us)
+        if length_us <= 0:
+            return
+        material_id = self._register_video(media)
+        self._segments.append(
+            self._video_segment(
+                material_id, start_us, length_us, self._video_cursor_us,
+                len(self._segments), volume,
+            )
+        )
+        self._video_cursor_us += length_us
 
     def add_video_cuts(self, keeps: list[Range]) -> None:
         """보존 구간들을 잘라 붙여 점프컷 타임라인을 만든다."""
-        cursor_us = 0
+        if self.media is None:
+            raise ValueError("주 소스(media)가 없습니다. add_clip 을 쓰세요.")
         for keep in keeps:
-            start_us = int(round(keep.start * US))
-            length_us = int(round(keep.length * US))
-            if length_us <= 0:
+            self.add_clip(self.media, keep.start, keep.length)
+
+    def add_audio(
+        self,
+        path: Path,
+        duration: float,
+        target_start: float = 0.0,
+        volume: float = 1.0,
+        source_start: float = 0.0,
+    ) -> None:
+        """오디오 트랙에 한 토막. 나레이션이면 target_start 로 줄을 세운다."""
+        clip = AudioClip(
+            path=Path(path).expanduser().resolve(), duration=duration,
+            target_start=target_start, volume=volume, source_start=source_start,
+        )
+        length_us = _us(clip.duration)
+        if length_us <= 0:
+            return
+        material_id = new_id()
+        self._materials["audios"].append(self._audio_material(clip, material_id))
+        self._meta_entries.append(
+            self._material_meta_audio(clip)
+        )
+        self._audio_segments.append({
+            "cartoon": False,
+            "clip": None,
+            "common_keyframes": [],
+            "enable_adjust": False, "enable_color_curves": True,
+            "enable_color_wheels": True, "enable_lut": False,
+            "extra_material_refs": self._segment_extras(with_canvas=False),
+            "group_id": "", "hdr_settings": None, "id": new_id(),
+            "intensifies_audio": False, "is_placeholder": False,
+            "is_tone_modify": False, "keyframe_refs": [],
+            "last_nonzero_volume": clip.volume, "material_id": material_id,
+            "render_index": 0, "responsive_layout": {
+                "enable": False, "horizontal_pos_layout": 0, "size_layout": 0,
+                "target_follow": "", "vertical_pos_layout": 0,
+            },
+            "reverse": False,
+            "source_timerange": {"duration": length_us, "start": _us(clip.source_start)},
+            "speed": 1.0,
+            "target_timerange": {"duration": length_us, "start": _us(clip.target_start)},
+            "template_id": "", "template_scene": "default", "track_attribute": 0,
+            "track_render_index": 0, "uniform_scale": None,
+            "visible": True, "volume": clip.volume,
+        })
+
+    def add_subtitles(
+        self, cues: list[SubtitleCue], style: SubtitleStyle | None = None
+    ) -> None:
+        """자막 트랙. 시간은 **타임라인(컷 적용 후)** 기준이어야 한다."""
+        style = style or SubtitleStyle()
+        for i, cue in enumerate(cues):
+            if not cue.text.strip() or cue.duration <= 0:
                 continue
-            # 소스 끝을 넘어가는 요청은 캡컷에서 클립이 사라지는 원인이 된다.
-            length_us = min(length_us, self.media.duration_us - start_us)
-            if length_us <= 0:
-                continue
-            self._segments.append(
-                self._video_segment(start_us, length_us, cursor_us, len(self._segments))
+            material_id = new_id()
+            self._materials["texts"].append(
+                self._text_material(cue, style, material_id)
             )
-            cursor_us += length_us
-        self._timeline_us = cursor_us
+            self._text_segments.append({
+                "cartoon": False,
+                "clip": {
+                    "alpha": 1.0,
+                    "flip": {"horizontal": False, "vertical": False},
+                    "rotation": 0.0, "scale": {"x": 1.0, "y": 1.0},
+                    # 지뢰 7번: 자막 세로 위치는 여기다.
+                    "transform": {"x": 0.0, "y": style.transform_y},
+                },
+                "common_keyframes": [], "enable_adjust": False,
+                "enable_color_curves": True, "enable_color_wheels": True,
+                "enable_lut": False, "extra_material_refs": [],
+                "group_id": "", "hdr_settings": None, "id": new_id(),
+                "intensifies_audio": False, "is_placeholder": False,
+                "is_tone_modify": False, "keyframe_refs": [],
+                "last_nonzero_volume": 1.0, "material_id": material_id,
+                "render_index": _TEXT_RENDER_BASE + i,
+                "responsive_layout": {
+                    "enable": False, "horizontal_pos_layout": 0, "size_layout": 0,
+                    "target_follow": "", "vertical_pos_layout": 0,
+                },
+                "reverse": False,
+                "source_timerange": None,
+                "speed": 1.0,
+                "target_timerange": {
+                    "duration": _us(cue.duration), "start": _us(cue.start),
+                },
+                "template_id": "", "template_scene": "default", "track_attribute": 0,
+                "track_render_index": _TEXT_RENDER_BASE + i,
+                "uniform_scale": {"on": True, "value": 1.0},
+                "visible": True, "volume": 1.0,
+            })
 
     def _video_segment(
-        self, source_start_us: int, length_us: int, target_start_us: int, index: int
+        self, material_id: str, source_start_us: int, length_us: int,
+        target_start_us: int, index: int, volume: float = 1.0,
     ) -> dict:
         return {
             "cartoon": False,
@@ -188,8 +492,9 @@ class DraftBuilder:
             "group_id": "",
             "hdr_settings": {"intensity": 1.0, "mode": 1, "nits": 1000},
             "id": new_id(), "intensifies_audio": False, "is_placeholder": False,
-            "is_tone_modify": False, "keyframe_refs": [], "last_nonzero_volume": 1.0,
-            "material_id": self._video_material_id, "render_index": 0,
+            "is_tone_modify": False, "keyframe_refs": [],
+            "last_nonzero_volume": volume,
+            "material_id": material_id, "render_index": 0,
             "responsive_layout": {
                 "enable": False, "horizontal_pos_layout": 0, "size_layout": 0,
                 "target_follow": "", "vertical_pos_layout": 0,
@@ -201,28 +506,33 @@ class DraftBuilder:
             "template_id": "", "template_scene": "default", "track_attribute": 0,
             "track_render_index": index,
             "uniform_scale": {"on": True, "value": 1.0},
-            "visible": True, "volume": 1.0,
+            "visible": True, "volume": volume,
         }
 
     # ---------------------------------------------------------------- writing
 
     def _tracks(self) -> list[dict]:
-        tracks = [{
-            "attribute": 0, "flag": 0, "id": new_id(), "is_default_name": True,
-            "name": "", "segments": self._segments, "type": "video",
-        }]
-        if self._text_segments:
-            tracks.append({
+        def track(kind: str, segments: list[dict]) -> dict:
+            return {
                 "attribute": 0, "flag": 0, "id": new_id(), "is_default_name": True,
-                "name": "", "segments": self._text_segments, "type": "text",
-            })
+                "name": "", "segments": segments, "type": kind,
+            }
+
+        tracks = [track("video", self._segments)]
+        if self._audio_segments:
+            tracks.append(track("audio", self._audio_segments))
+        if self._text_segments:
+            tracks.append(track("text", self._text_segments))
         return tracks
 
     def timeline_json(self) -> dict:
+        assert self.canvas is not None
         return {
             "canvas_config": {
-                "height": self.media.height, "ratio": "original",
-                "width": self.media.width,
+                "height": self.canvas.height,
+                "ratio": "original" if self.is_original_canvas
+                else crop_ratio_label(self.canvas),
+                "width": self.canvas.width,
             },
             "color_space": 0,
             "config": {
@@ -238,8 +548,8 @@ class DraftBuilder:
                 "subtitle_taskinfo": [], "system_font_list": [],
                 "video_mute": False, "zoom_info_params": None,
             },
-            "cover": None, "create_time": 0, "duration": self._timeline_us,
-            "extra_info": None, "fps": self.media.fps,
+            "cover": None, "create_time": 0, "duration": self.timeline_us,
+            "extra_info": None, "fps": self.fps,
             "free_render_index_mode_on": False, "group_container": None,
             "id": self.draft_id, "keyframe_graph_list": [],
             "keyframes": {
@@ -294,7 +604,7 @@ class DraftBuilder:
             "draft_is_ai_translate": False, "draft_is_article_video_draft": False,
             "draft_is_from_deeplink": "false", "draft_is_invisible": False,
             "draft_materials": [
-                {"type": 0, "value": [self._material_meta(now_us)]},
+                {"type": 0, "value": self._stamped_meta_entries(now_us)},
                 {"type": 1, "value": []}, {"type": 2, "value": []},
                 {"type": 3, "value": []}, {"type": 6, "value": []},
                 {"type": 7, "value": []}, {"type": 8, "value": []},
@@ -307,20 +617,44 @@ class DraftBuilder:
             "tm_draft_create": now_us, "tm_draft_modified": now_us,
             "tm_draft_removed": 0,
             # 지뢰 2번: 이 값이 캡컷 홈 화면의 프로젝트 길이다.
-            "tm_duration": self._timeline_us,
+            "tm_duration": self.timeline_us,
         }
 
-    def _material_meta(self, now_us: int) -> dict:
+    def _stamped_meta_entries(self, now_us: int) -> list[dict]:
+        entries = []
+        for entry in self._meta_entries:
+            stamped = dict(entry)
+            stamped["create_time"] = int(now_us / US)
+            stamped["import_time"] = int(now_us / US)
+            stamped["import_time_ms"] = now_us
+            entries.append(stamped)
+        return entries
+
+    def _material_meta(self, media: MediaInfo, metetype: str) -> dict:
         return {
-            "create_time": int(now_us / US), "duration": self.media.duration_us,
-            "extra_info": self.media.path.name,
-            "file_Path": _native_path(self.media.path),
-            "height": self.media.height, "id": new_id(),
-            "import_time": int(now_us / US), "import_time_ms": now_us,
-            "item_source": 1, "md5": "", "metetype": "video",
-            "roughcut_time_range": {"duration": self.media.duration_us, "start": 0},
+            "create_time": 0, "duration": media.duration_us,
+            "extra_info": media.path.name,
+            "file_Path": _native_path(media.path),
+            "height": media.height, "id": new_id(),
+            "import_time": 0, "import_time_ms": 0,
+            "item_source": 1, "md5": "", "metetype": metetype,
+            "roughcut_time_range": {"duration": media.duration_us, "start": 0},
             "sub_time_range": {"duration": -1, "start": -1},
-            "type": 0, "width": self.media.width,
+            "type": 0, "width": media.width,
+        }
+
+    def _material_meta_audio(self, clip: AudioClip) -> dict:
+        duration_us = _us(clip.duration)
+        return {
+            "create_time": 0, "duration": duration_us,
+            "extra_info": clip.path.name,
+            "file_Path": _native_path(clip.path),
+            "height": 0, "id": new_id(),
+            "import_time": 0, "import_time_ms": 0,
+            "item_source": 1, "md5": "", "metetype": "music",
+            "roughcut_time_range": {"duration": duration_us, "start": 0},
+            "sub_time_range": {"duration": -1, "start": -1},
+            "type": 0, "width": 0,
         }
 
     def write(self, root: Path) -> Path:
