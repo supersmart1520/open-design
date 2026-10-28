@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import platform
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -90,14 +92,44 @@ class DashboardServer:
             self._thread.join(timeout=5)
 
 
-def open_window(url: str) -> str:
-    """네이티브 창을 연다. pywebview 가 없으면 브라우저로 떨어진다.
+#: 크롬 계열은 `--app=` 으로 탭도 주소창도 없는 창을 띄운다. 추가 설치
+#: 없이 앱처럼 보이는 창을 얻는 유일한 길이다. 사파리에는 없는 기능이다.
+APP_MODE_BROWSERS = (
+    "/Applications/Google Chrome.app",
+    "/Applications/Microsoft Edge.app",
+    "/Applications/Brave Browser.app",
+    "/Applications/Chromium.app",
+)
 
-    어느 쪽으로 열었는지 돌려준다 — 사용자에게 알려주기 위해서다.
+
+def app_mode_command(url: str, system: str | None = None,
+                     exists=None) -> list[str] | None:
+    """탭 없는 창으로 띄우는 명령. 쓸 수 있는 브라우저가 없으면 `None`."""
+    if (system or platform.system()) != "Darwin":
+        return None
+    seen = exists or (lambda path: Path(path).is_dir())
+    for app in APP_MODE_BROWSERS:
+        if seen(app):
+            return ["open", "-na", app, "--args", f"--app={url}"]
+    return None
+
+
+def open_window(url: str) -> str:
+    """창을 연다. 좋은 쪽부터 차례로 떨어진다.
+
+    `pywebview` → 크롬 계열 앱 모드 → 그냥 브라우저 탭. 어느 쪽으로
+    열었는지 돌려준다 — 사용자에게 알려주기 위해서다.
     """
     try:
         import webview  # type: ignore[import-not-found]
     except ImportError:
+        command = app_mode_command(url)
+        if command is not None:
+            try:
+                subprocess.run(command, check=True, capture_output=True, timeout=20)
+                return "app-window"
+            except (OSError, subprocess.SubprocessError):
+                pass  # 브라우저 탭으로 떨어진다. 기능은 같다.
         webbrowser.open(url)
         return "browser"
 
@@ -127,14 +159,17 @@ def run(workspace: Path, draft_dir: str | None = None,
 
     try:
         how = open_window(server.url)
-        if how == "browser":
+        if how != "window":
             on_message("")
-            on_message("네이티브 창 대신 브라우저로 열었습니다.")
+            if how == "app-window":
+                on_message("탭 없는 창으로 열었습니다.")
+            else:
+                on_message(f"브라우저로 열었습니다: {server.url}")
             # 지금 돌고 있는 파이썬을 적는다. venv 안이면 그 경로여야 한다.
-            on_message(f"창으로 띄우려면 (선택):  {sys.executable} -m pip install pywebview")
-            on_message("  — 빌드가 깨지면 그냥 두세요. 기능은 같습니다.")
+            on_message(f"앱 자체 창으로 띄우려면:  {sys.executable} -m pip install pywebview")
             on_message("종료하려면 Ctrl+C")
-            # 브라우저로 열었으면 창 닫힘 신호가 없다. 사용자가 끊을 때까지 둔다.
+            # pywebview 가 아니면 창 닫힘 신호가 오지 않는다. 사용자가 끊을
+            # 때까지 띄워 둔다 — 여기서 끝내면 서버도 같이 내려간다.
             while True:
                 time.sleep(1)
     except KeyboardInterrupt:
