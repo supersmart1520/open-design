@@ -229,3 +229,70 @@ def test_copy_mode_survives_the_source_moving(tmp_path):
     installed = dest / "SKILL.md"
     assert not installed.is_symlink()
     assert installed.read_text("utf-8").startswith("---")
+
+
+# --- 어느 아키텍처로 띄울지 ---------------------------------------------------
+#
+# universal2 파이썬은 arm64 로도 x86_64 로도 뜨는데, 확장 모듈은 pip 를 돌린
+# 쪽 하나만 깔려 있다. 터미널에서 되는 것이 `.app` 안에서 된다는 보장이 없다.
+
+
+def test_working_arch_picks_the_one_that_imports(monkeypatch):
+    import subprocess as sp
+
+    from capcut_agent.cli import working_arch
+
+    tried = []
+
+    def fake_run(command, **kwargs):
+        tried.append(command[:2])
+        # arm64 만 실패하는 기계.
+        failed = command[:2] == ["/usr/bin/arch", "-arm64"]
+        return sp.CompletedProcess(command, 1 if failed else 0, b"", b"")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+
+    assert working_arch("/py") == ("/usr/bin/arch", "-x86_64")
+    assert tried[0] == ["/usr/bin/arch", "-arm64"]
+
+
+def test_working_arch_returns_none_when_nothing_imports(monkeypatch):
+    import subprocess as sp
+
+    from capcut_agent.cli import working_arch
+
+    monkeypatch.setattr(
+        sp, "run",
+        lambda command, **kw: sp.CompletedProcess(command, 1, b"", b""),
+    )
+    assert working_arch("/py") is None
+
+
+def test_working_arch_prefers_plain_when_arch_is_absent(monkeypatch):
+    # 인텔 맥이나 arch 가 없는 환경. 그냥 실행이 통하면 그걸 쓴다.
+    import subprocess as sp
+
+    from capcut_agent.cli import working_arch
+
+    def fake_run(command, **kwargs):
+        if command[0] == "/usr/bin/arch":
+            raise FileNotFoundError("arch 가 없습니다")
+        return sp.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(sp, "run", fake_run)
+
+    assert working_arch("/py") == ()
+
+
+def test_mac_launcher_hunts_for_an_importable_arch():
+    from pathlib import Path
+
+    from capcut_agent.cli import _mac_launcher
+
+    script = _mac_launcher(Path("/pkg"), "/py")
+
+    # 인터프리터가 뜨는지만 보면 안 된다. import 가 되는지를 봐야 한다.
+    assert "import fastapi, uvicorn" in script
+    assert '"/usr/bin/arch -arm64" "/usr/bin/arch -x86_64" ""' in script
+    # 어느 쪽도 안 되면 조용히 끝내지 않는다.
+    assert "필요한 패키지를 읽지 못했습니다" in script

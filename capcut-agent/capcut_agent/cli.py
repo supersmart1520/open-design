@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import platform
 import shlex
@@ -217,6 +216,8 @@ def build_parser() -> argparse.ArgumentParser:
     install_app = subparsers.add_parser(
         "install-app", help="더블클릭으로 실행되는 앱 아이콘을 만든다"
     )
+    install_app.add_argument("--python",
+                             help="앱이 쓸 파이썬 (기본: 지금 이 파이썬)")
     install_app.add_argument("--dest", help="설치 위치 (기본: macOS ~/Applications, "
                                             "그 외 바탕화면)")
 
@@ -1060,17 +1061,37 @@ fi
 cd "$APPDIR" || exit 1
 {{ echo; echo "=== $(date) ==="; }} >>"$LOG"
 
-# Xcode 가 들고 오는 파이썬은 universal2 다. 터미널에서는 arm64 로 돌아서
-# pip 가 arm64 휠을 깔지만, `.app` 으로 띄우면 x86_64 로 뜨는 경우가 있다.
-# 그러면 방금 깐 arm64 확장(`_pydantic_core.so`)을 못 읽고 죽는다.
-# 기계가 arm64 면 그쪽으로 못박는다. 쓸 수 있는지 먼저 확인해서, 안 되면
-# 그냥 평소대로 돈다 — x86_64 전용 파이썬에서 arch 로 막히지 않게.
-ARCH=""
-if [ "$(uname -m)" = "arm64" ] && /usr/bin/arch -arm64 "$PY" -c "" 2>/dev/null; then
-  ARCH="/usr/bin/arch -arm64"
+# Xcode 가 들고 오는 파이썬은 universal2 라 arm64 로도 x86_64 로도 뜬다.
+# 그런데 확장 모듈(`_pydantic_core.so`)은 pip 를 돌린 쪽 하나만 깔려 있다.
+# 터미널에서는 되고 `.app` 에서는 안 되는 일이 여기서 갈린다.
+#
+# 인터프리터가 뜨는지만 봐서는 소용없다. **import 가 되는 쪽**을 찾는다.
+PYRUN=""
+FOUND=no
+for CAND in "/usr/bin/arch -arm64" "/usr/bin/arch -x86_64" ""; do
+  if $CAND "$PY" -c "import fastapi, uvicorn" >/dev/null 2>&1; then
+    PYRUN="$CAND"
+    FOUND=yes
+    echo "파이썬: $CAND $PY" >>"$LOG"
+    break
+  fi
+done
+
+if [ "$FOUND" = no ]; then
+  # 어느 아키텍처로도 못 읽는다. 진짜 오류를 기록에 남겨 둔다.
+  "$PY" -c "import fastapi, uvicorn" >>"$LOG" 2>&1
+  alert "필요한 패키지를 읽지 못했습니다.
+
+$PY
+
+아래를 터미널에 붙여 넣고 다시 열어 보세요:
+  $PY -m pip install --force-reinstall fastapi 'uvicorn[standard]'
+
+기록: $LOG"
+  exit 1
 fi
 
-$ARCH "$PY" -m capcut_agent.cli app >>"$LOG" 2>&1
+$PYRUN "$PY" -m capcut_agent.cli app >>"$LOG" 2>&1
 STATUS=$?
 
 if [ $STATUS -ne 0 ]; then
@@ -1082,6 +1103,31 @@ $(tail -n 10 "$LOG")
 fi
 exit $STATUS
 """
+
+
+#: 런처가 시도하는 순서와 같다. 빈 문자열은 "그냥 실행".
+ARCH_CANDIDATES = (("/usr/bin/arch", "-arm64"), ("/usr/bin/arch", "-x86_64"), ())
+
+
+def working_arch(python: str) -> tuple[str, ...] | None:
+    """`fastapi`/`uvicorn` 을 **읽을 수 있는** 아키텍처를 찾는다.
+
+    이 프로세스에서 `find_spec` 로 확인하면 안 된다. universal2 파이썬은
+    arm64 로도 x86_64 로도 뜨는데 확장 모듈은 한쪽만 깔려 있고, 터미널에서
+    되는 것이 `.app` 안에서 된다는 보장이 없다. 굳혀 넣을 파이썬을 **실제로
+    실행해서** 확인한다. 못 찾으면 `None`.
+    """
+    for prefix in ARCH_CANDIDATES:
+        try:
+            done = subprocess.run(
+                [*prefix, python, "-c", "import fastapi, uvicorn"],
+                capture_output=True, timeout=60,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if done.returncode == 0:
+            return prefix
+    return None
 
 
 def _clear_quarantine(path: Path) -> None:
@@ -1104,7 +1150,7 @@ def run_install_app(args) -> int:
     from . import __version__
 
     package_dir = Path(__file__).resolve().parent.parent
-    python = sys.executable
+    python = args.python or sys.executable
     system = platform.system()
 
     if system == "Darwin":
@@ -1145,20 +1191,23 @@ def run_install_app(args) -> int:
             )
             target.chmod(0o755)
 
-    missing = [name for name in ("fastapi", "uvicorn")
-               if importlib.util.find_spec(name) is None]
+    arch = working_arch(python)
 
     print(f"앱 설치   : {target}")
     print(f"파이썬    : {python}")
     print(f"패키지    : {package_dir}")
     print(f"기록      : {APP_LOG}")
     print()
-    if missing:
-        # 이게 빠진 채로 더블클릭하면 창이 안 뜨고 끝난다.
-        print(f"⚠ 아직 실행되지 않습니다 — 빠진 패키지: {', '.join(missing)}")
+    if arch is None:
+        # 이대로 더블클릭하면 창이 안 뜨고 끝난다. 설치 때 말해 준다.
+        print("⚠ 아직 실행되지 않습니다 — fastapi/uvicorn 을 읽지 못했습니다.")
         print(f"  {install_hint(python)}")
+        print()
+        print("다른 파이썬을 쓰려면:  install-app --python <경로>")
     else:
         print("더블클릭하면 창이 열립니다.")
+        if arch:
+            print(f"  ({' '.join(arch)} 로 띄웁니다 — 패키지가 그쪽에 깔려 있습니다)")
     print()
     print(WINDOW_NOTE)
     print(WINDOW_FALLBACK)
