@@ -25,6 +25,12 @@ DEFAULT_MAX_CHARS = 18
 DEFAULT_MAX_LINES = 2
 #: 이만큼 쉬면 큐를 끊는다 (초).
 DEFAULT_GAP_BREAK = 0.5
+#: 자막 한 장이 이보다 오래 떠 있으면 끊는다 (초).
+#:
+#: 이건 **안전장치**다. 실제로 끊는 일은 종결어미와 컷 경계가 한다. 상한을
+#: 낮게 잡으면 "정해야 / 합니다" 처럼 문장 한가운데를 자른다. 한국어 한 문장은
+#: 보통 6초 안에 끝나므로, 그걸 넘는 건 뭔가 잘못된 경우로 본다.
+DEFAULT_MAX_DURATION = 6.0
 
 #: 혼자 줄을 시작하면 안 되는 의존명사.
 BOUND_NOUNS = (
@@ -46,7 +52,13 @@ _BOUND_TOKENS = frozenset(
     f"{noun}{particle}" for noun in BOUND_NOUNS for particle in _PARTICLES
 ) | frozenset({"때문에", "때문이", "때문으로", "때문입니다", "덕분에", "탓에"})
 
-_SENTENCE_END = re.compile(r"[.!?。！？]$")
+#: 문장 끝 신호. 구두점이 있으면 가장 확실하고, 한국어는 종결어미로도 끊는다.
+#: whisper 는 구두점을 자주 빠뜨리므로 어미까지 봐야 문장 단위로 끊긴다.
+_SENTENCE_END = re.compile(
+    r"[.!?。！？]$"
+    r"|(?:습니다|읍니다|입니다|합니다|됩니다)$"
+    r"|(?:[가-힣])(?:다|요|죠|까|네|군요|구나|세요|에요|예요|겠죠|거든요)$"
+)
 _TRIM = re.compile(r"^[\s\"'“”‘’(\[{]+|[\s\"'“”‘’)\]}]+$")
 
 
@@ -163,12 +175,23 @@ def cues_from_words(
     max_chars: int = DEFAULT_MAX_CHARS,
     max_lines: int = DEFAULT_MAX_LINES,
     gap_break: float = DEFAULT_GAP_BREAK,
+    max_duration: float = DEFAULT_MAX_DURATION,
+    boundaries: list[float] | None = None,
 ) -> list[SubtitleCue]:
     """단어 타임스탬프를 자막 큐로 묶는다.
 
-    끊는 기준은 셋이다. 문장이 끝났을 때, 쉬었을 때, 분량이 찼을 때.
+    끊는 기준은 다섯이다.
+      1. 문장이 끝났을 때 (구두점 또는 한국어 종결어미)
+      2. 쉬었을 때
+      3. 분량이 찼을 때
+      4. 한 장이 너무 오래 떠 있을 때
+      5. **컷 경계를 넘을 때**
+
+    5번이 없으면, 컷으로 무음을 걷어낸 뒤 멀리 떨어져 있던 두 문장이
+    타임라인에서 맞붙어 한 장에 담긴다. 틈이 사라져 2번이 안 걸리기 때문이다.
     """
     budget = max_chars * max_lines
+    edges = sorted(boundaries or [])
     cues: list[SubtitleCue] = []
     buffer: list[Word] = []
 
@@ -193,6 +216,9 @@ def cues_from_words(
                 cues.append(SubtitleCue(cursor, chunk_end, chunk))
             cursor = chunk_end
 
+    def crosses_cut(from_time: float, to_time: float) -> bool:
+        return any(from_time <= edge <= to_time for edge in edges)
+
     for word in words:
         if not word.text.strip():
             continue
@@ -200,10 +226,13 @@ def cues_from_words(
             previous = buffer[-1]
             gap = word.start - previous.end
             projected = len(" ".join([*(w.text.strip() for w in buffer), word.text.strip()]))
+            span = word.end - buffer[0].start
             if (
                 gap >= gap_break
                 or projected > budget
+                or span > max_duration
                 or _SENTENCE_END.search(previous.text.strip())
+                or crosses_cut(previous.end, word.start)
             ):
                 flush()
         buffer.append(word)

@@ -135,3 +135,69 @@ def test_normal_words_are_never_split_mid_word():
     for line in lines:
         for token in line.split():
             assert token in {"우리가", "이것을", "해봅시다"}
+
+
+# -------------------------------------------- 끊는 기준 (실사용 버그)
+
+
+def test_a_korean_sentence_ending_breaks_the_cue_without_punctuation():
+    """whisper 는 구두점을 자주 빠뜨린다. 종결어미로도 끊어야 한다."""
+    words = _words([
+        ("오늘", 0.0, 0.4), ("세", 0.4, 0.7), ("가지입니다", 0.7, 1.4),
+        ("첫째", 1.5, 1.9), ("기준입니다", 1.9, 2.6),
+    ])
+    cues = cues_from_words(words, max_chars=40, gap_break=5.0)
+    assert len(cues) == 2
+    assert cues[0].text.endswith("가지입니다")
+
+
+def test_ordinary_words_do_not_look_like_sentence_endings():
+    from capcut_agent.subtitle import _SENTENCE_END
+
+    for token in ("먼저", "그래서", "가장", "세", "기준을"):
+        assert not _SENTENCE_END.search(token), token
+
+
+def test_a_cue_never_outstays_the_duration_cap():
+    from capcut_agent.subtitle import DEFAULT_MAX_DURATION
+
+    # 종결어미도 쉼도 없이 길게 이어지는 경우.
+    words = _words([(f"말{i}", i * 1.0, i * 1.0 + 0.9) for i in range(12)])
+    cues = cues_from_words(words, max_chars=200, gap_break=5.0)
+    for cue in cues:
+        assert cue.duration <= DEFAULT_MAX_DURATION + 1.0
+
+
+def test_the_duration_cap_is_a_safety_net_not_a_scissors():
+    """상한이 낮으면 문장 한가운데를 자른다. 6초 문장은 통째로 남아야 한다."""
+    words = _words([
+        ("첫째", 0.0, 1.2), ("기준을", 1.3, 2.5),
+        ("먼저", 2.6, 3.8), ("정해야", 3.9, 4.6), ("합니다", 4.7, 5.4),
+    ])
+    cues = cues_from_words(words, max_chars=40, gap_break=5.0)
+    assert len(cues) == 1
+    assert cues[0].text.endswith("합니다")
+
+
+def test_a_cue_never_spans_a_cut_boundary():
+    """이번 버그의 핵심.
+
+    컷으로 무음을 걷어내면 멀리 있던 두 문장이 타임라인에서 맞붙는다.
+    틈이 사라져 '쉼' 신호가 안 걸리므로, 컷 경계를 따로 알려줘야 한다.
+    """
+    words = _words([
+        ("앞문장", 0.0, 1.0), ("입니다", 1.0, 1.8),
+        ("뒷문장", 1.8, 2.6), ("이어짐", 2.6, 3.4),
+    ])
+    without = cues_from_words(words, max_chars=200, gap_break=5.0)
+    with_cut = cues_from_words(
+        words, max_chars=200, gap_break=5.0, boundaries=[1.8]
+    )
+    assert len(with_cut) > len(without) or len(with_cut) >= 2
+    for cue in with_cut:
+        assert not (cue.start < 1.8 < cue.end), "자막이 컷 경계를 넘었습니다"
+
+
+def test_boundaries_outside_the_speech_change_nothing():
+    words = _words([("하나", 0.0, 0.5), ("둘입니다", 0.5, 1.0)])
+    assert cues_from_words(words, boundaries=[99.0]) == cues_from_words(words)

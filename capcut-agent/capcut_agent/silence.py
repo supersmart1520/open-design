@@ -113,6 +113,60 @@ def to_timeline(keeps: list[Range], source_time: float) -> float | None:
     return None
 
 
+def keeps_from_words(words, duration: float, opts: SilenceOptions) -> list[Range]:
+    """**대본**에서 보존 구간을 만든다. 무음 감지 대신 whisper 가 컷을 정한다.
+
+    ffmpeg 의 무음 감지는 소리의 크기만 본다. 단어가 어디서 시작하고 끝나는지
+    모르니 컷 경계가 단어 한가운데 떨어질 수 있고, 그러면 말이 잘리거나
+    자막이 사라진다. 단어 타임스탬프로 자르면 컷이 **항상 단어 사이**에 떨어진다.
+
+    규칙은 하나다. 단어와 단어 사이 틈이 min_silence 보다 길면 거기를 자른다.
+    """
+    spans = [Range(w.start, w.end) for w in words if w.end > w.start]
+    if not spans:
+        return []
+    # 틈이 min_silence 이하면 같은 덩어리로 본다.
+    merged = merge(spans, tolerance=opts.min_silence)
+    return pad_and_tidy(merged, duration, opts)
+
+
+def overlap_to_timeline(
+    keeps: list[Range], start: float, end: float
+) -> tuple[float, float] | None:
+    """단어 구간 [start, end] 중 **살아남은 부분**을 타임라인 시각으로.
+
+    to_timeline() 은 한 점이 잘려나간 자리면 None 을 준다. 그걸 단어에 그대로
+    쓰면 컷 경계에 걸친 단어가 통째로 버려진다. 무음 경계는 단어 경계와
+    일치하지 않으므로, 말이 시작·끝나는 지점의 단어가 바로 그렇게 사라진다.
+    영상에는 말이 남았는데 자막만 없는 구간이 생기는 원인이다.
+
+    그래서 버리는 대신 **겹치는 부분만 잘라 쓴다.** 보존 구간과 전혀 겹치지
+    않는 단어(= 소리가 통째로 사라진 단어)만 None 이다.
+    """
+    if end < start:
+        start, end = end, start
+    if end == start:
+        # 길이 0 토막. 한 점이라도 보존 구간 안이면 살린다.
+        point = to_timeline(keeps, start)
+        return None if point is None else (point, point)
+
+    first: float | None = None
+    last: float | None = None
+    offset = 0.0
+    for keep in keeps:
+        low = max(start, keep.start)
+        high = min(end, keep.end)
+        if high > low:
+            if first is None:
+                first = offset + (low - keep.start)
+            last = offset + (high - keep.start)
+        offset += keep.length
+
+    if first is None or last is None or last <= first:
+        return None
+    return first, last
+
+
 def keeps_from_silence(stderr: str, duration: float, opts: SilenceOptions) -> list[Range]:
     """silencedetect 출력 한 방에서 최종 보존 구간까지."""
     silences = parse_silence(stderr, duration)

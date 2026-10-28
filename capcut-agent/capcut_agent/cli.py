@@ -39,7 +39,13 @@ from .highlight import (
 )
 from .media import MediaInfo, detect_silence_raw, probe
 from .paths import resolve_draft_root
-from .silence import Range, SilenceOptions, keeps_from_silence, to_timeline
+from .silence import (
+    Range,
+    SilenceOptions,
+    keeps_from_silence,
+    keeps_from_words,
+    overlap_to_timeline,
+)
 from .subtitle import DEFAULT_MAX_CHARS, Word, cues_from_words, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
@@ -108,7 +114,10 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                          help="자막 한 줄 글자 수")
     caption.add_argument("--cut", action="store_true",
-                         help="무음 구간도 같이 잘라낸다")
+                         help="말 없는 구간도 같이 잘라낸다")
+    caption.add_argument("--cut-by", choices=("speech", "silence"), default="speech",
+                         help="컷 기준. speech=대본의 단어 사이 틈(기본, 말이 안 잘림), "
+                              "silence=ffmpeg 음량 감지")
     caption.add_argument("--speech-y", type=float, default=SPEECH_Y_PX,
                          help="말하는 자막 세로 위치 (캔버스 픽셀, 중앙 0, 위가 양수). "
                               "기본 %(default)s")
@@ -373,20 +382,38 @@ def caption_one(video: Path, workspace, args) -> int:
     keeps: list[Range] = []
     if args.cut:
         options = resolve_options(workspace, args)
-        keeps = plan_cuts(media, options)
+        by = args.cut_by
+        if by == "speech" and not transcript.words:
+            # 단어 타임스탬프가 없으면 대본으로 자를 수 없다.
+            print("  … 단어 타임스탬프가 없어 음량 감지로 자릅니다")
+            by = "silence"
+        if by == "speech":
+            keeps = keeps_from_words(transcript.words, media.duration, options)
+        else:
+            keeps = plan_cuts(media, options)
         if not keeps:
-            print("보존할 구간이 없습니다. --noise-db 를 낮춰 보세요.", file=sys.stderr)
+            hint = ("--min-silence 를 올려 보세요." if by == "speech"
+                    else "--noise-db 를 낮춰 보세요.")
+            print(f"보존할 구간이 없습니다. {hint}", file=sys.stderr)
             return 1
         kept = sum(k.length for k in keeps)
+        label = "대본 기준" if by == "speech" else "음량 기준"
         print(f"컷        : {len(keeps)}조각 / {_fmt(kept)} "
-              f"({(1 - kept / media.duration) * 100:.1f}% 제거)")
+              f"({(1 - kept / media.duration) * 100:.1f}% 제거, {label})")
 
     words = transcript.words or [
         Word(s.text, s.start, s.end) for s in transcript.segments
     ]
+    dropped = 0
+    boundaries: list[float] = []
     if keeps:
-        words = _shift_words(words, keeps)
-    cues = cues_from_words(words, max_chars=args.max_chars)
+        words, dropped = _shift_words(words, keeps)
+        if dropped:
+            print(f"  … 컷에 통째로 들어간 단어 {dropped}개는 자막에서 뺐습니다")
+        boundaries = _cut_boundaries(keeps)
+    cues = cues_from_words(
+        words, max_chars=args.max_chars, boundaries=boundaries
+    )
     if not cues:
         print("자막으로 만들 말이 없습니다.", file=sys.stderr)
         return 1
@@ -449,12 +476,14 @@ def caption_one(video: Path, workspace, args) -> int:
             "문장수": len(transcript.segments), "단어수": len(transcript.words),
         },
         "컷": {
-            "적용": bool(keeps), "보존조각": len(keeps),
+            "적용": bool(keeps), "기준": args.cut_by if keeps else None,
+            "보존조각": len(keeps),
             "출력길이초": round(sum(k.length for k in keeps), 3) if keeps
                         else round(media.duration, 3),
         },
         "자막": {
             "장수": len(cues), "한줄글자수": args.max_chars,
+            "컷으로버린단어": dropped,
             "말하는자막Ypx": args.speech_y,
             "제목": title or None, "제목Ypx": args.title_y if title else None,
         },
@@ -465,19 +494,39 @@ def caption_one(video: Path, workspace, args) -> int:
     return 0
 
 
-def _shift_words(words: list[Word], keeps: list[Range]) -> list[Word]:
+def _cut_boundaries(keeps: list[Range]) -> list[float]:
+    """컷이 떨어지는 **타임라인** 시각들.
+
+    자막 한 장이 이 지점을 넘으면 안 된다. 넘으면 멀리 떨어져 있던 두 말이
+    한 장에 담긴다 — 컷으로 틈이 사라져 '쉼' 신호가 안 걸리기 때문이다.
+    """
+    edges: list[float] = []
+    offset = 0.0
+    for keep in keeps[:-1]:
+        offset += keep.length
+        edges.append(offset)
+    return edges
+
+
+def _shift_words(words: list[Word], keeps: list[Range]) -> tuple[list[Word], int]:
     """소스 시각의 단어들을 컷 적용 후 타임라인 시각으로 옮긴다.
 
-    잘려나간 자리에 걸친 단어는 버린다 — 없는 화면에 자막만 뜨는 걸 막는다.
+    컷 경계에 걸친 단어는 **버리지 않고 겹치는 부분만** 쓴다. 무음 경계가
+    단어 경계와 다르기 때문에, 버리면 말이 남아 있는데 자막만 없는 구간이
+    생긴다. 소리가 통째로 사라진 단어만 버리고, 그 수를 같이 돌려준다.
     """
     shifted: list[Word] = []
+    dropped = 0
     for word in words:
-        start = to_timeline(keeps, word.start)
-        end = to_timeline(keeps, word.end)
-        if start is None or end is None or end <= start:
+        span = overlap_to_timeline(keeps, word.start, word.end)
+        if span is None:
+            dropped += 1
             continue
+        start, end = span
+        if end <= start:
+            end = start + 0.01
         shifted.append(Word(word.text, start, end))
-    return shifted
+    return shifted, dropped
 
 
 #: 자막이 화면 가장자리에 붙지 않도록 남기는 여유 (정규화).

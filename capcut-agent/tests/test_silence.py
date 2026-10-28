@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from capcut_agent.silence import (
     Range,
     SilenceOptions,
@@ -78,3 +80,87 @@ def test_end_to_end_from_ffmpeg_stderr():
 
 def test_no_silence_keeps_whole_clip():
     assert keeps_from_silence("", 12.0, SilenceOptions()) == [Range(0.0, 12.0)]
+
+
+# ------------------------------------------- 대본 기준 컷 (whisper 단어)
+
+
+class _W:
+    """Word 최소 구현 — keeps_from_words 는 start/end 만 본다."""
+
+    def __init__(self, start: float, end: float):
+        self.start = start
+        self.end = end
+
+
+def test_keeps_from_words_cuts_only_between_words():
+    from capcut_agent.silence import keeps_from_words
+
+    words = [_W(0.0, 1.0), _W(1.1, 2.0), _W(5.0, 6.0)]
+    opts = SilenceOptions(min_silence=0.35, padding=0.0, min_keep=0.0, min_gap=0.0)
+    keeps = keeps_from_words(words, duration=8.0, opts=opts)
+    # 0.1초 틈은 붙고, 3초 틈에서만 잘린다.
+    assert keeps == [Range(0.0, 2.0), Range(5.0, 6.0)]
+
+
+def test_no_word_ever_straddles_a_cut_boundary():
+    """이게 보장되면 '말은 있는데 자막이 없는 구간' 이 생기지 않는다."""
+    from capcut_agent.silence import keeps_from_words, overlap_to_timeline
+
+    words = [_W(0.0, 1.0), _W(1.1, 2.0), _W(5.0, 6.0), _W(6.05, 7.0)]
+    opts = SilenceOptions(min_silence=0.35, padding=0.08, min_keep=0.0, min_gap=0.0)
+    keeps = keeps_from_words(words, duration=9.0, opts=opts)
+    for word in words:
+        assert overlap_to_timeline(keeps, word.start, word.end) is not None
+
+
+def test_keeps_from_words_with_no_words_is_empty():
+    from capcut_agent.silence import keeps_from_words
+
+    assert keeps_from_words([], 10.0, SilenceOptions()) == []
+
+
+def test_zero_length_words_are_ignored():
+    from capcut_agent.silence import keeps_from_words
+
+    assert keeps_from_words([_W(1.0, 1.0)], 10.0, SilenceOptions()) == []
+
+
+# ------------------------------------------------- 컷 경계에 걸친 단어
+
+
+def test_a_word_straddling_a_cut_keeps_its_surviving_part():
+    """버리면 자막이 사라진다. 겹치는 부분만 잘라 쓴다."""
+    from capcut_agent.silence import overlap_to_timeline
+
+    keeps = [Range(0.0, 2.0), Range(5.0, 8.0)]
+    # 1.8~2.3 은 앞 구간에 0.2초만 걸친다.
+    span = overlap_to_timeline(keeps, 1.8, 2.3)
+    assert span is not None
+    start, end = span
+    assert start == pytest.approx(1.8)
+    assert end == pytest.approx(2.0)
+
+
+def test_a_word_entirely_inside_a_cut_is_dropped():
+    from capcut_agent.silence import overlap_to_timeline
+
+    assert overlap_to_timeline([Range(0.0, 2.0), Range(5.0, 8.0)], 3.0, 4.0) is None
+
+
+def test_a_word_spanning_two_keeps_maps_across_the_join():
+    from capcut_agent.silence import overlap_to_timeline
+
+    keeps = [Range(0.0, 2.0), Range(5.0, 8.0)]
+    span = overlap_to_timeline(keeps, 1.5, 5.5)
+    assert span is not None
+    start, end = span
+    assert start == pytest.approx(1.5)
+    # 앞 구간 2초 + 뒤 구간 0.5초
+    assert end == pytest.approx(2.5)
+
+
+def test_a_zero_length_word_inside_a_keep_survives():
+    from capcut_agent.silence import overlap_to_timeline
+
+    assert overlap_to_timeline([Range(0.0, 2.0)], 1.0, 1.0) == (1.0, 1.0)

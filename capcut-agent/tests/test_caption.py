@@ -372,9 +372,53 @@ def stub_silence(monkeypatch):
     )
 
 
-def test_cut_flag_produces_multiple_video_segments(stub_probe, stub_silence, ws, draft_root, video):
-    assert _run(ws, draft_root, video, ["--cut"]) == 0
+def test_cut_by_silence_follows_the_volume_detector(stub_probe, stub_silence, ws, draft_root, video):
+    assert _run(ws, draft_root, video, ["--cut", "--cut-by", "silence"]) == 0
     assert len(_timeline(draft_root)["tracks"][0]["segments"]) == 2
+
+
+def test_cut_by_speech_is_the_default_and_follows_the_transcript(
+    stub_probe, stub_silence, ws, draft_root, video
+):
+    """대본의 단어 사이 틈으로 자른다. 세 문장 사이 0.8초 틈이 둘 있다."""
+    assert _run(ws, draft_root, video, ["--cut"]) == 0
+    assert len(_timeline(draft_root)["tracks"][0]["segments"]) == 3
+
+
+def test_cutting_by_speech_never_loses_a_word_from_the_subtitles(
+    stub_probe, stub_silence, ws, draft_root, video
+):
+    """이번 버그의 핵심.
+
+    음량 기준 컷은 경계가 단어 한가운데 떨어질 수 있어, 말이 남아 있는데
+    자막만 사라지는 구간이 생겼다. 대본 기준 컷은 컷이 항상 단어 사이라
+    모든 말이 자막으로 남아야 한다.
+    """
+    _run(ws, draft_root, video, ["--cut", "--max-chars", "40"])
+    timeline = _timeline(draft_root)
+    texts = {m["id"]: json.loads(m["content"])["text"] for m in timeline["materials"]["texts"]}
+    rendered = " ".join(
+        texts[s["material_id"]].replace("\n", " ")
+        for s in _speech_track(draft_root)["segments"]
+    )
+    for line in LINES:
+        for token in line.split():
+            assert token in rendered, f"{token!r} 가 자막에서 사라졌습니다"
+
+
+def test_subtitles_cover_the_cut_timeline_without_long_holes(
+    stub_probe, stub_silence, ws, draft_root, video
+):
+    """자막 없는 구간이 생기지 않는지. 컷으로 틈을 걷어냈으니 간격이 짧아야 한다."""
+    _run(ws, draft_root, video, ["--cut"])
+    segments = _speech_track(draft_root)["segments"]
+    spans = sorted(
+        (s["target_timerange"]["start"], s["target_timerange"]["duration"])
+        for s in segments
+    )
+    for (start, duration), (next_start, _) in zip(spans, spans[1:]):
+        hole_us = next_start - (start + duration)
+        assert hole_us <= 1_000_000, f"자막 사이에 {hole_us / 1e6:.2f}초 구멍"
 
 
 def test_without_cut_the_video_stays_whole(stub_probe, stub_silence, ws, draft_root, video):
