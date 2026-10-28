@@ -23,6 +23,7 @@ from pathlib import Path
 from . import storage
 from .draft import (
     SPEECH_Y_PX,
+    TITLE_FONT_SIZE,
     TITLE_SECONDS,
     TITLE_X_PX,
     TITLE_Y_PX,
@@ -157,6 +158,9 @@ def build_parser() -> argparse.ArgumentParser:
                          help="제목 가로 위치 (캔버스 픽셀, 중앙 0)")
     caption.add_argument("--title-seconds", type=float, default=TITLE_SECONDS,
                          help="제목이 떠 있는 시간, 초 (기본 %(default)s)")
+    caption.add_argument("--title-font-size", type=float, default=TITLE_FONT_SIZE,
+                         help="제목 글자 크기 (기본 %(default)s). 말하는 자막보다 "
+                              "훨씬 커야 썸네일에서 손가락이 멈춥니다.")
     caption.add_argument("--media-mode",
                          choices=("auto", "link", "copy", "none"),
                          help="미디어를 드래프트 폴더로 들이는 방식. macOS 는 "
@@ -167,6 +171,8 @@ def build_parser() -> argparse.ArgumentParser:
                          choices=("center", "left", "right", "top", "bottom"),
                          help="--shorts 일 때 남길 쪽")
     caption.add_argument("--srt", action="store_true", help="SRT 도 같이 내보낸다")
+    caption.add_argument("--preview", action="store_true",
+                         help="미리보기 MP4 도 굽는다. 캡컷 없이 결과를 바로 본다.")
     caption.add_argument("--json", action="store_true",
                          help="마지막 줄에 결과를 JSON 한 줄로 출력한다 (대시보드용)")
 
@@ -554,7 +560,7 @@ def caption_one(video: Path, workspace, args) -> int:
             title,
             SubtitleStyle.from_pixels(
                 args.title_y, height, args.title_x, width,
-                font_size=args.font_size, motion=args.motion,
+                font_size=args.title_font_size, motion=args.motion,
             ),
             start=title_span[0], end=title_span[1],
         )
@@ -603,6 +609,34 @@ def caption_one(video: Path, workspace, args) -> int:
         srt_path.write_text(to_srt(cues), encoding="utf-8")
         print(f"SRT       : {srt_path}")
 
+    preview_path = None
+    if args.preview:
+        # 드래프트와 **같은** 컷·자막 데이터로 굽는다. 따로 계산하면
+        # 검수한 영상과 캡컷 프로젝트가 어긋난다.
+        from .render import RenderPlan, render
+
+        preview_path = workspace.previews / f"{name}.mp4"
+        print("  … 미리보기 렌더 중")
+        render(
+            RenderPlan(
+                media=media,
+                keeps=keeps or [Range(0.0, media.duration)],
+                cues=cues,
+                canvas=builder.canvas,
+                speech_style=speech_style,
+                title=title,
+                title_style=(
+                    SubtitleStyle.from_pixels(
+                        args.title_y, height, args.title_x, width,
+                        font_size=args.title_font_size,
+                    ) if title else None
+                ),
+                title_span=title_span,
+            ),
+            preview_path,
+        )
+        print(f"미리보기  : {preview_path}")
+
     report = {
         "모드": "caption",
         "생성시각": datetime.now().isoformat(timespec="seconds"),
@@ -632,6 +666,7 @@ def caption_one(video: Path, workspace, args) -> int:
             "제목1행": title.line1 if title else None,
             "제목2행": title.line2 if title else None,
             "제목팔레트": args.title_palette if title else None,
+            "제목글자크기": args.title_font_size if title else None,
             "제목Ypx": args.title_y if title else None,
             "제목Xpx": args.title_x if title else None,
             "제목초": args.title_seconds if title else None,
@@ -640,6 +675,7 @@ def caption_one(video: Path, workspace, args) -> int:
         "미디어반입": mode,
         "드래프트": str(folder),
         "대본파일": str(script_path),
+        "미리보기": str(preview_path) if preview_path else None,
     }
     storage.write_report(workspace, name, report)
     if getattr(args, "json", False):

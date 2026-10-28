@@ -66,6 +66,11 @@ class Workspace:
         return self.home / "voice"
 
     @property
+    def previews(self) -> Path:
+        """검수용 미리보기 MP4. 캡컷 없이 결과를 보는 용도."""
+        return self.home / "previews"
+
+    @property
     def asr_cache(self) -> Path:
         """전사 캐시. 키는 파일 내용 해시."""
         return self.home / "cache" / "asr"
@@ -78,7 +83,7 @@ class Workspace:
     def folders(self) -> tuple[Path, ...]:
         return (
             self.inbox, self.done, self.failed, self.reports,
-            self.scripts, self.broll, self.voice, self.asr_cache,
+            self.scripts, self.broll, self.voice, self.previews, self.asr_cache,
         )
 
 
@@ -206,6 +211,7 @@ def describe(workspace: Workspace) -> str:
         ("  failed ", workspace.failed),
         ("  scripts", workspace.scripts),
         ("  voice  ", workspace.voice),
+        ("  preview", workspace.previews),
         ("  reports", workspace.reports),
     ):
         count = len(list(folder.iterdir())) if folder.is_dir() else 0

@@ -32,6 +32,7 @@
 ├── failed/       ← 처리에 실패한 원본이 옮겨진다
 ├── scripts/      ← 대본 · 전사 · 숏폼 후보 교환 파일 (사람이 열어 고치는 곳)
 ├── voice/        ← 합성된 나레이션 mp3 (문장 해시로 캐시)
+├── previews/     ← 검수용 미리보기 MP4
 ├── reports/      ← 무엇을 왜 잘랐는지의 기록
 ├── cache/asr/    ← 전사 캐시 (키 = 파일 내용 해시)
 └── config.json   ← 기본 컷 옵션. 매번 플래그 치지 않아도 되게.
@@ -201,6 +202,7 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 | `--motion none\|fade\|pop\|rise` | 자막 등장 모션 (기본 `none`) |
 | `--font-size 15` | 글자 크기. 키우면 한 줄 글자 수가 자동으로 준다 |
 | `--no-fill-gaps` | 자막 사이 빈틈을 그대로 둔다 (기본은 메움) |
+| `--preview` | 미리보기 MP4 도 굽기 |
 | `--srt` | SRT 도 같이 내보내기 |
 
 ---
@@ -291,6 +293,27 @@ python -m capcut_agent.cli serve          # http://127.0.0.1:8765
 
 ---
 
+### 미리보기 MP4 — `--preview`
+
+캡컷 드래프트는 캡컷에서만 열립니다. 그런데 **컷이 맞는지, 자막이 읽히는지,
+제목이 얼굴을 가리지 않는지는 보면 1초**입니다. 그래서 같은 데이터로 MP4 도 굽습니다.
+
+```bash
+python -m capcut_agent.cli caption --inbox --cut --shorts --preview
+```
+
+`~/CapCutAgent/previews/` 에 떨어집니다. 폰에서 바로 돌려 보고, 괜찮으면 캡컷을
+열면 됩니다.
+
+> **드래프트와 MP4 는 같은 컷·자막 데이터에서 나옵니다.** 따로 계산하면 검수한
+> 영상과 캡컷 프로젝트가 어긋납니다.
+
+자막은 ASS 로 굽습니다 — 한 줄 안에서 색과 크기를 바꿀 수 있어 제목 2색·2크기가
+그대로 표현됩니다. 한글 폰트는 설치된 것 중에서 고릅니다
+(Pretendard → Noto Sans CJK → Apple SD Gothic → 맑은 고딕 → 나눔고딕 순).
+
+---
+
 ### 제목 자막 규칙 — 릴스 썸네일 문법
 
 제목은 영상당 **한 장, 두 줄**입니다. 말하는 자막과 목적이 다릅니다. 자막은 들은
@@ -362,6 +385,7 @@ python -m capcut_agent.cli serve          # http://127.0.0.1:8765
 | `--title-palette green\|red` | `green` |
 | `--title-x` / `--title-y` | `0` / `0` (캔버스 픽셀, 중앙) |
 | `--title-seconds` | `3.0` |
+| `--title-font-size` | `26` (말하는 자막은 `12`) |
 | `--no-title` | 제목 없이 |
 
 ---
@@ -415,6 +439,7 @@ python -m capcut_agent.cli caption 영상.mp4          # 파일 하나
 | `--motion none\|fade\|pop\|rise` | 자막 등장 모션 (기본 `none`) |
 | `--font-size 15` | 글자 크기. 키우면 한 줄 글자 수가 자동으로 준다 |
 | `--no-fill-gaps` | 자막 사이 빈틈을 그대로 둔다 (기본은 메움) |
+| `--preview` | 미리보기 MP4 도 굽기 |
 | `--srt` | SRT 도 같이 내보내기 |
 | `--inbox` | inbox 안의 영상을 전부 처리 |
 | `--cut` | 말 없는 구간도 같이 잘라낸다 |
@@ -481,6 +506,7 @@ python -m capcut_agent.cli 영상.mp4                  # 서브커맨드 생략 
 | 1.5단 | 파일 저장소 (inbox / done / failed / scripts / reports / config) | **완료** |
 | 1.6단 | 미디어 경로 버그 수정 — 드래프트가 이동 후 경로를 가리키게 | **완료** |
 | 2단 | 숏폼 기반 — 9:16 프레이밍, 한국어 자막, 오디오 트랙 | **완료** |
+| 3.9단 | **미리보기 렌더** — FFmpeg + ASS 로 검수용 MP4 | **완료** |
 | 3단 | **모드 A** — 전사 → 대본 → 후보 추천 → 승인 → 숏폼 드래프트 | **완료 · 캡컷 재생 검증 대기** |
 | 3.5단 | **자막만** (`caption`) — 컷 없이 전체 영상 + 자막 | **완료 · 캡컷 재생 검증 대기** |
 | 4단 | **모드 B** — ElevenLabs 나레이션 + B롤 → 숏폼 드래프트 | 다음 |
@@ -505,6 +531,7 @@ capcut-agent/
 │   ├── subtitle.py     # 한국어 줄바꿈 · 큐 묶기 · SRT (순수 로직)
 │   ├── title.py        # 제목 규칙 — 2줄·명사형·크기계층·팔레트
 │   ├── doctor.py       # whisper 자가진단
+│   ├── render.py       # FFmpeg 미리보기 렌더 (ASS 자막)
 │   ├── eojeol.py       # whisper 토막 → 한국어 어절 복원 (순수 로직)
 │   ├── transcribe.py   # 로컬 whisper + 내용 해시 캐시 + ASR 락
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
@@ -518,7 +545,7 @@ capcut-agent/
 │       ├── events.py   #   SSE 브로커
 │       ├── watcher.py  #   inbox 자동 감지 (복사 완료까지 대기)
 │       └── static/     #   화면 한 장
-└── tests/              # pytest 340개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 360개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

@@ -109,6 +109,10 @@ TITLE_Y_PX = 0
 TITLE_X_PX = 0
 #: 제목이 떠 있는 기본 시간 (초). 썸네일 후킹이라 길 필요가 없다.
 TITLE_SECONDS = 3.0
+#: 제목 글자 크기. 말하는 자막보다 훨씬 크다 — 썸네일에서 글자가 화면을
+#: 꽉 채워야 손가락이 멈춘다. 자막과 같은 크기로 두면 제목이 아니라
+#: 그냥 또 하나의 자막으로 보인다.
+TITLE_FONT_SIZE = 26.0
 
 
 def x_px_to_normalized(pixels: float, canvas_width: int) -> float:
