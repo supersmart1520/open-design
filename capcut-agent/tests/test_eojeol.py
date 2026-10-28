@@ -36,9 +36,28 @@ def test_a_split_verb_ending_is_rejoined():
     assert _texts(out) == ["중요합니다"]
 
 
-def test_the_first_token_starts_an_eojeol_even_without_a_space():
-    out = merge_eojeol([Word("순서", 0.0, 0.4), Word("가", 0.4, 0.5)])
+def test_a_continuation_merges_once_any_leading_space_is_present():
+    """선행 공백이 하나라도 있으면 그 백엔드는 공백을 주는 쪽 → 병합한다."""
+    out = merge_eojeol([Word(" 순서", 0.0, 0.4), Word("가", 0.4, 0.5)])
     assert _texts(out) == ["순서가"]
+
+
+def test_a_backend_that_strips_every_space_does_not_collapse_the_sentence():
+    """안전장치.
+
+    선행 공백이 **하나도** 없으면 그 백엔드는 공백을 떼고 준다는 뜻이다.
+    그대로 합치면 문장 전체가 한 어절로 뭉쳐 자막이 붙어버린다. 합치지 않는다.
+    """
+    out = merge_eojeol([
+        Word("순서", 0.0, 0.4), Word("가장", 0.5, 0.9), Word("중요합니다", 1.0, 1.5),
+    ])
+    assert _texts(out) == ["순서", "가장", "중요합니다"]
+
+
+def test_the_safety_net_still_applies_the_invariants():
+    out = merge_eojeol([Word("하나", 1.0, 1.0), Word("둘", 1.0, 1.0)])
+    assert all(w.end > w.start for w in out)
+    assert out[0].start < out[1].start
 
 
 def test_multiple_leading_spaces_are_stripped():

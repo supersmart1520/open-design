@@ -20,13 +20,26 @@ from datetime import datetime
 from pathlib import Path
 
 from . import storage
-from .draft import DraftBuilder, SubtitleStyle
+from .draft import (
+    SPEECH_Y_PX,
+    TITLE_Y_PX,
+    DraftBuilder,
+    SubtitleStyle,
+    default_media_mode,
+    y_px_to_normalized,
+)
 from .env_check import DRAFT_CHECK_NAME, format_report, run_checks
 from .framing import SHORTS
-from .highlight import load_candidates, propose, save_candidates, selected
+from .highlight import (
+    load_candidates,
+    propose,
+    representative_line,
+    save_candidates,
+    selected,
+)
 from .media import MediaInfo, detect_silence_raw, probe
 from .paths import resolve_draft_root
-from .silence import Range, SilenceOptions, keeps_from_silence
+from .silence import Range, SilenceOptions, keeps_from_silence, to_timeline
 from .subtitle import DEFAULT_MAX_CHARS, Word, cues_from_words, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
@@ -94,8 +107,19 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--model", default="", help="whisper 모델 (생략하면 트랙 기본값)")
     caption.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
                          help="자막 한 줄 글자 수")
-    caption.add_argument("--subtitle-y", type=float, default=-0.72,
-                         help="자막 세로 위치. 화면 중앙 0, 아래가 음수.")
+    caption.add_argument("--cut", action="store_true",
+                         help="무음 구간도 같이 잘라낸다")
+    caption.add_argument("--speech-y", type=float, default=SPEECH_Y_PX,
+                         help="말하는 자막 세로 위치 (캔버스 픽셀, 중앙 0, 위가 양수). "
+                              "기본 %(default)s")
+    caption.add_argument("--title", help="제목 자막 문구. 생략하면 대본에서 뽑는다.")
+    caption.add_argument("--title-y", type=float, default=TITLE_Y_PX,
+                         help="제목 자막 세로 위치 (캔버스 픽셀). 기본 %(default)s")
+    caption.add_argument("--no-title", action="store_true", help="제목 자막 없이")
+    caption.add_argument("--media-mode",
+                         choices=("auto", "link", "copy", "none"),
+                         help="미디어를 드래프트 폴더로 들이는 방식. macOS 는 "
+                              "샌드박스 때문에 auto 가 기본이다.")
     caption.add_argument("--shorts", action="store_true",
                          help="9:16 세로로 크롭한다 (기본은 원본 비율 그대로)")
     caption.add_argument("--anchor", default="center",
@@ -318,10 +342,13 @@ def run_caption(args, workspace) -> int:
 
 
 def caption_one(video: Path, workspace, args) -> int:
-    """영상 하나에 자막만 얹는다. 원본은 건드리지 않는다 — 옮기지도, 자르지도 않는다."""
+    """영상 하나에 자막을 얹는다. --cut 을 주면 무음도 같이 잘라낸다."""
     media = probe(video)
+    shape = f"{media.width}x{media.height}"
+    if media.rotation:
+        shape += f" (회전 {media.rotation}°)"
     print(f"입력      : {media.path.name}")
-    print(f"해상도    : {media.width}x{media.height} @ {media.fps}fps")
+    print(f"해상도    : {shape} @ {media.fps}fps")
     print(f"길이      : {_fmt(media.duration)}")
     if not media.has_audio:
         print("오디오가 없어 자막을 만들 수 없습니다.", file=sys.stderr)
@@ -342,31 +369,64 @@ def caption_one(video: Path, workspace, args) -> int:
         print("전사 결과가 비었습니다. 오디오를 확인해 주세요.", file=sys.stderr)
         return 1
 
-    # 컷이 없으므로 소스 시간이 그대로 타임라인 시간이다.
+    # 컷을 먼저 정하고, 자막 시간을 그 결과 위로 옮긴다.
+    keeps: list[Range] = []
+    if args.cut:
+        options = resolve_options(workspace, args)
+        keeps = plan_cuts(media, options)
+        if not keeps:
+            print("보존할 구간이 없습니다. --noise-db 를 낮춰 보세요.", file=sys.stderr)
+            return 1
+        kept = sum(k.length for k in keeps)
+        print(f"컷        : {len(keeps)}조각 / {_fmt(kept)} "
+              f"({(1 - kept / media.duration) * 100:.1f}% 제거)")
+
     words = transcript.words or [
         Word(s.text, s.start, s.end) for s in transcript.segments
     ]
+    if keeps:
+        words = _shift_words(words, keeps)
     cues = cues_from_words(words, max_chars=args.max_chars)
     if not cues:
         print("자막으로 만들 말이 없습니다.", file=sys.stderr)
         return 1
 
     name = args.name or f"{media.path.stem}-자막-{datetime.now():%m%d-%H%M%S}"
+    canvas = SHORTS if args.shorts else None
     builder = DraftBuilder(
-        media=media, name=name,
-        canvas=SHORTS if args.shorts else None,
-        crop_anchor=args.anchor,
+        media=media, name=name, canvas=canvas, crop_anchor=args.anchor
     )
-    builder.add_clip(media, 0.0, media.duration)
-    builder.add_subtitles(cues, SubtitleStyle(transform_y=args.subtitle_y))
-    folder = builder.write(resolve_draft_root(args.draft_dir))
+    if keeps:
+        builder.add_video_cuts(keeps)
+    else:
+        builder.add_clip(media, 0.0, media.duration)
+
+    height = builder.canvas.height
+    speech_style = SubtitleStyle.from_pixels(args.speech_y, height)
+    _warn_offscreen("말하는 자막", args.speech_y, height)
+    builder.add_subtitles(cues, speech_style)
+
+    title = ""
+    if not args.no_title:
+        title = args.title or representative_line(transcript)
+        if title:
+            _warn_offscreen("제목 자막", args.title_y, height)
+            builder.add_title(title, SubtitleStyle.from_pixels(args.title_y, height))
+
+    mode = args.media_mode or default_media_mode()
+    folder = builder.write(resolve_draft_root(args.draft_dir), media_mode=mode)
 
     script_path = workspace.scripts / f"{media.path.stem}.대본.txt"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(transcript.script(), encoding="utf-8")
 
     print()
+    print(f"캔버스    : {builder.canvas.width}x{builder.canvas.height}")
     print(f"문장       : {len(transcript.segments)}개 → 자막 {len(cues)}장")
+    if title:
+        print(f"제목      : {title}")
+    if mode != "none":
+        print(f"미디어     : 드래프트 폴더로 반입 ({mode}) — 샌드박스 대응")
     print(f"대본      : {script_path}")
     print(f"드래프트  : {folder}")
 
@@ -381,21 +441,78 @@ def caption_one(video: Path, workspace, args) -> int:
         "원본": {
             "경로": str(media.path),
             "해상도": f"{media.width}x{media.height}",
+            "회전": media.rotation,
             "길이초": round(media.duration, 3),
         },
         "전사": {
             "언어": transcript.language, "모델": transcript.model,
             "문장수": len(transcript.segments), "단어수": len(transcript.words),
         },
+        "컷": {
+            "적용": bool(keeps), "보존조각": len(keeps),
+            "출력길이초": round(sum(k.length for k in keeps), 3) if keeps
+                        else round(media.duration, 3),
+        },
         "자막": {
             "장수": len(cues), "한줄글자수": args.max_chars,
-            "세로위치": args.subtitle_y,
+            "말하는자막Ypx": args.speech_y,
+            "제목": title or None, "제목Ypx": args.title_y if title else None,
         },
-        "캔버스": f"{SHORTS.width}x{SHORTS.height}" if args.shorts
-                 else f"{media.width}x{media.height}",
+        "캔버스": f"{builder.canvas.width}x{builder.canvas.height}",
+        "미디어반입": mode,
         "드래프트": str(folder),
     })
     return 0
+
+
+def _shift_words(words: list[Word], keeps: list[Range]) -> list[Word]:
+    """소스 시각의 단어들을 컷 적용 후 타임라인 시각으로 옮긴다.
+
+    잘려나간 자리에 걸친 단어는 버린다 — 없는 화면에 자막만 뜨는 걸 막는다.
+    """
+    shifted: list[Word] = []
+    for word in words:
+        start = to_timeline(keeps, word.start)
+        end = to_timeline(keeps, word.end)
+        if start is None or end is None or end <= start:
+            continue
+        shifted.append(Word(word.text, start, end))
+    return shifted
+
+
+#: 자막이 화면 가장자리에 붙지 않도록 남기는 여유 (정규화).
+_EDGE_MARGIN = 0.92
+
+
+def _warn_offscreen(label: str, y_px: float, canvas_height: int) -> None:
+    """위치 값이 이 캔버스에서 화면을 벗어나는지 보고, 대안 수치를 알려준다.
+
+    픽셀 값은 **그 값을 읽은 프로젝트의 캔버스**에 묶여 있다. 4K 세로(3840)
+    프로젝트에서 읽은 y=1400 을 1080x1920 숏폼 캔버스에 그대로 쓰면 화면 밖이다.
+    """
+    normalized = y_px_to_normalized(y_px, canvas_height)
+    half = canvas_height // 2
+    if abs(normalized) <= 1.0:
+        if abs(normalized) > _EDGE_MARGIN:
+            print(
+                f"  ⚠ {label} y={y_px:g}px 가 화면 가장자리에 거의 닿습니다 "
+                f"(정규화 {normalized:+.2f}). 잘려 보일 수 있습니다.",
+                file=sys.stderr,
+            )
+        return
+
+    # 같은 '상대 위치' 를 이 캔버스에서 내려면 얼마여야 하는지 알려준다.
+    suggested = int(round(_EDGE_MARGIN * half * (1 if y_px > 0 else -1)))
+    print(
+        f"  ⚠ {label} y={y_px:g}px 는 캔버스 세로 {canvas_height}px 에서 "
+        f"화면 밖입니다 (정규화 {normalized:+.2f}).",
+        file=sys.stderr,
+    )
+    print(
+        f"     이 캔버스의 범위는 ±{half}px 입니다. "
+        f"{suggested:+d} 정도를 쓰시거나, 원본 비율 그대로(--shorts 없이) 만드세요.",
+        file=sys.stderr,
+    )
 
 
 # -------------------------------------------------------- shorts (모드 A 1단계)

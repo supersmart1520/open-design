@@ -101,6 +101,18 @@ def pad_and_tidy(keeps: list[Range], duration: float, opts: SilenceOptions) -> l
     return [k for k in merge(padded, opts.min_gap) if k.length >= opts.min_keep]
 
 
+def to_timeline(keeps: list[Range], source_time: float) -> float | None:
+    """소스 시각 → 컷 적용 후 타임라인 시각. 잘려나간 자리면 None."""
+    offset = 0.0
+    for keep in keeps:
+        if source_time < keep.start:
+            return None
+        if source_time <= keep.end:
+            return offset + (source_time - keep.start)
+        offset += keep.length
+    return None
+
+
 def keeps_from_silence(stderr: str, duration: float, opts: SilenceOptions) -> list[Range]:
     """silencedetect 출력 한 방에서 최종 보존 구간까지."""
     silences = parse_silence(stderr, duration)

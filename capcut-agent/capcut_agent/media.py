@@ -19,15 +19,22 @@ class ToolMissing(RuntimeError):
 @dataclass
 class MediaInfo:
     path: Path
+    #: **표시** 기준 가로/세로. 회전 메타데이터를 이미 반영한 값이다.
     width: int
     height: int
     fps: float
     duration: float
     has_audio: bool
+    #: 컨테이너에 적힌 회전각(도). 0 / 90 / 180 / 270.
+    rotation: int = 0
 
     @property
     def duration_us(self) -> int:
         return int(round(self.duration * 1_000_000))
+
+    @property
+    def is_portrait(self) -> bool:
+        return self.height > self.width
 
 
 def _run(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -59,16 +66,37 @@ def _rational(value: object) -> float:
     return n / d if d else 0.0
 
 
-def probe(video: str | Path) -> MediaInfo:
-    path = Path(video).expanduser().resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"입력 파일이 없습니다: {path}")
+def read_rotation(video_stream: dict) -> int:
+    """컨테이너의 회전각을 읽는다. 0 / 90 / 180 / 270 으로 정규화한다.
 
-    proc = _run_ok(
-        [FFPROBE, "-v", "error", "-print_format", "json",
-         "-show_format", "-show_streams", str(path)]
-    )
-    data = json.loads(proc.stdout)
+    ffprobe 가 회전을 알려주는 방식이 두 가지다.
+      * 예전: streams[].tags.rotate = "90"
+      * 요즘: streams[].side_data_list[].rotation = -90  (Display Matrix)
+    Display Matrix 의 부호는 반시계가 음수라 화면 기준 각도와 반대다.
+    아이폰 세로 촬영 .MOV 가 정확히 이 경우고, 이걸 놓치면 1080x1920 영상을
+    1920x1080 으로 보게 되어 캔버스 비율이 통째로 뒤집힌다.
+    """
+    tags = video_stream.get("tags") or {}
+    raw = tags.get("rotate")
+    if raw is not None:
+        try:
+            return int(float(raw)) % 360
+        except (TypeError, ValueError):
+            pass
+
+    for side_data in video_stream.get("side_data_list") or []:
+        if "rotation" not in side_data:
+            continue
+        try:
+            # Display Matrix 는 반시계 음수 → 화면 회전각으로 뒤집는다.
+            return int(round(-float(side_data["rotation"]))) % 360
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def media_info_from_probe(data: dict, path: Path) -> MediaInfo:
+    """ffprobe JSON → MediaInfo. 순수 함수라 단위테스트가 가능하다."""
     streams = data.get("streams", [])
     video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
@@ -86,14 +114,34 @@ def probe(video: str | Path) -> MediaInfo:
     if duration <= 0:
         raise RuntimeError(f"길이를 읽지 못했습니다: {path}")
 
+    width = int(video_stream.get("width") or 1920)
+    height = int(video_stream.get("height") or 1080)
+    rotation = read_rotation(video_stream)
+    if rotation in (90, 270):
+        # 세로로 찍은 아이폰 영상. 표시 기준으로는 가로/세로가 뒤바뀐다.
+        width, height = height, width
+
     return MediaInfo(
         path=path,
-        width=int(video_stream.get("width") or 1920),
-        height=int(video_stream.get("height") or 1080),
+        width=width,
+        height=height,
         fps=round(fps, 3),
         duration=duration,
         has_audio=audio_stream is not None,
+        rotation=rotation,
     )
+
+
+def probe(video: str | Path) -> MediaInfo:
+    path = Path(video).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"입력 파일이 없습니다: {path}")
+
+    proc = _run_ok(
+        [FFPROBE, "-v", "error", "-print_format", "json",
+         "-show_format", "-show_streams", str(path)]
+    )
+    return media_info_from_probe(json.loads(proc.stdout), path)
 
 
 def detect_silence_raw(video: str | Path, noise_db: float, min_dur: float) -> str:

@@ -226,6 +226,38 @@ def propose(
     return candidates
 
 
+def representative_line(transcript: Transcript, max_chars: int = 26) -> str:
+    """영상을 대표하는 한 줄. 제목 자막의 기본값.
+
+    후킹 표현이 들어간 짧고 완결된 문장을 고른다. 없으면 첫 문장을 줄여 쓴다.
+    사람이 `--title` 로 덮어쓰는 게 늘 낫고, 이건 그 전의 그럴듯한 기본값이다.
+    """
+    segments = transcript.segments
+    if not segments:
+        return ""
+
+    best, best_score = "", float("-inf")
+    for segment in segments[: min(len(segments), 40)]:
+        line = " ".join(segment.text.split())
+        if not line:
+            continue
+        score = 0.0
+        hooks = _hooks_in(line)
+        score += 2.0 * min(len(hooks), 2)
+        if "?" in line:
+            score += 1.5
+        if _is_complete(line):
+            score += 1.0
+        # 제목은 한 줄이어야 하므로 짧을수록 좋다.
+        score -= abs(len(line) - max_chars) / max_chars
+        if score > best_score:
+            best, best_score = line, score
+
+    if not best:
+        best = " ".join(segments[0].text.split())
+    return best if len(best) <= max_chars else best[: max_chars - 1] + "…"
+
+
 def save_candidates(
     path: Path, source: Path, transcript: Transcript, candidates: list[Candidate]
 ) -> Path:

@@ -23,6 +23,11 @@
   5. 캡컷이 실행 중이면 새 드래프트가 목록에 안 나타난다 → 재시작 안내.
   6. 원본 이동은 드래프트 생성보다 먼저. 경로가 박혀 들어가므로.
   7. 자막 세로 위치는 segment.clip.transform.y. 화면 중앙이 0, 아래가 음수.
+  8. **macOS 캡컷은 샌드박스 안에서 돈다.** 컨테이너 밖 경로(~/CapCutAgent/inbox 등)는
+     읽지 못하고 "파일에 액세스할 수 없음 / Unsupported Media" 로 뜬다. UI 로 가져오면
+     macOS 가 파일 선택 창을 통해 권한을 주지만, 우리가 손으로 쓴 드래프트에는 그게 없다.
+     그래서 미디어를 **드래프트 폴더 안**(= 컨테이너 안)으로 옮겨 놓고 그 경로를 가리킨다.
+     같은 볼륨이면 하드링크라 용량을 더 쓰지 않는다.
 """
 
 from __future__ import annotations
@@ -30,10 +35,12 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from .framing import Anchor, Canvas, crop_ratio_label, crop_window
 from .media import MediaInfo
@@ -46,6 +53,8 @@ US = 1_000_000
 
 #: 자막은 영상보다 위에 그려져야 한다. 캡컷이 쓰는 대역을 따른다.
 _TEXT_RENDER_BASE = 14000
+#: 제목은 말하는 자막보다 더 위.
+_TITLE_RENDER_BASE = 15000
 
 
 def new_id() -> str:
@@ -90,6 +99,22 @@ def hex_to_rgb(value: str) -> list[float]:
     return [int(text[i : i + 2], 16) / 255 for i in (0, 2, 4)]
 
 
+#: 말하는 자막의 기본 세로 위치 (캔버스 픽셀, 중앙이 0, 위가 양수).
+SPEECH_Y_PX = -850
+#: 제목 자막의 기본 세로 위치 (캔버스 픽셀).
+TITLE_Y_PX = 1400
+
+
+def y_px_to_normalized(pixels: float, canvas_height: int) -> float:
+    """캡컷 UI 가 보여주는 픽셀 값을 드래프트 JSON 의 정규화 값으로.
+
+    JSON 의 transform.y 는 '캔버스 절반 높이 = 1' 인 단위다. UI 는 중앙 기준
+    픽셀을 보여준다. 그래서 절반 높이로 나눈다.
+    """
+    half = max(canvas_height, 1) / 2
+    return pixels / half
+
+
 @dataclass
 class SubtitleStyle:
     """자막 모양. 숏폼 기본값은 1080x1920 에서 읽히도록 맞춰 뒀다."""
@@ -98,13 +123,33 @@ class SubtitleStyle:
     color: str = "#FFFFFF"
     stroke_color: str = "#000000"
     stroke_width: float = 0.08
-    #: 세로 위치. 캡컷 좌표계는 화면 중앙이 0, 아래가 음수.
-    #: -0.72 는 하단 세이프존(좋아요·프로필 UI) 위쪽이다.
+    #: 세로 위치(정규화). 캡컷 좌표계는 화면 중앙이 0, 아래가 음수.
     transform_y: float = -0.72
+    #: 가로 위치(정규화). 0 = 가운데.
+    transform_x: float = 0.0
     #: 1 = 가운데 정렬.
     alignment: int = 1
     line_max_width: float = 0.82
     line_spacing: float = 0.02
+
+    @classmethod
+    def from_pixels(
+        cls, y_px: float, canvas_height: int, **kwargs
+    ) -> SubtitleStyle:
+        """캡컷 UI 의 픽셀 값으로 스타일을 만든다."""
+        return cls(transform_y=y_px_to_normalized(y_px, canvas_height), **kwargs)
+
+
+#: 드래프트 폴더 안에서 미디어를 두는 자리.
+MATERIALS_DIRNAME = "materials"
+
+#: 미디어 반입 모드. auto = 하드링크 시도 후 실패하면 복사.
+MediaMode = Literal["auto", "link", "copy", "none"]
+
+
+def default_media_mode(system: str | None = None) -> MediaMode:
+    """macOS 는 샌드박스 때문에 반입이 필수다. 나머지는 원본을 그대로 가리킨다."""
+    return "auto" if (system or platform.system()) == "Darwin" else "none"
 
 
 @dataclass
@@ -133,6 +178,7 @@ class DraftBuilder:
     _segments: list[dict] = field(default_factory=list, init=False)
     _audio_segments: list[dict] = field(default_factory=list, init=False)
     _text_segments: list[dict] = field(default_factory=list, init=False)
+    _title_segments: list[dict] = field(default_factory=list, init=False)
     _materials: dict[str, list[dict]] = field(default_factory=dict, init=False)
     _meta_entries: list[dict] = field(default_factory=list, init=False)
     _video_cursor_us: int = field(default=0, init=False)
@@ -158,7 +204,7 @@ class DraftBuilder:
     def timeline_us(self) -> int:
         """전체 길이. 비디오·오디오·자막 중 가장 늦게 끝나는 지점."""
         ends = [self._video_cursor_us]
-        for group in (self._audio_segments, self._text_segments):
+        for group in (self._audio_segments, self._text_segments, self._title_segments):
             ends += [
                 s["target_timerange"]["start"] + s["target_timerange"]["duration"]
                 for s in group
@@ -439,14 +485,21 @@ class DraftBuilder:
             self._materials["texts"].append(
                 self._text_material(cue, style, material_id)
             )
-            self._text_segments.append({
+            self._text_segments.append(
+                self._text_segment(cue, style, material_id, _TEXT_RENDER_BASE + i)
+            )
+
+    def _text_segment(
+        self, cue: SubtitleCue, style: SubtitleStyle, material_id: str, render_index: int
+    ) -> dict:
+        return {
                 "cartoon": False,
                 "clip": {
                     "alpha": 1.0,
                     "flip": {"horizontal": False, "vertical": False},
                     "rotation": 0.0, "scale": {"x": 1.0, "y": 1.0},
-                    # 지뢰 7번: 자막 세로 위치는 여기다.
-                    "transform": {"x": 0.0, "y": style.transform_y},
+                    # 지뢰 7번: 자막 위치는 여기다.
+                    "transform": {"x": style.transform_x, "y": style.transform_y},
                 },
                 "common_keyframes": [], "enable_adjust": False,
                 "enable_color_curves": True, "enable_color_wheels": True,
@@ -455,7 +508,7 @@ class DraftBuilder:
                 "intensifies_audio": False, "is_placeholder": False,
                 "is_tone_modify": False, "keyframe_refs": [],
                 "last_nonzero_volume": 1.0, "material_id": material_id,
-                "render_index": _TEXT_RENDER_BASE + i,
+                "render_index": render_index,
                 "responsive_layout": {
                     "enable": False, "horizontal_pos_layout": 0, "size_layout": 0,
                     "target_follow": "", "vertical_pos_layout": 0,
@@ -467,10 +520,38 @@ class DraftBuilder:
                     "duration": _us(cue.duration), "start": _us(cue.start),
                 },
                 "template_id": "", "template_scene": "default", "track_attribute": 0,
-                "track_render_index": _TEXT_RENDER_BASE + i,
+                "track_render_index": render_index,
                 "uniform_scale": {"on": True, "value": 1.0},
                 "visible": True, "volume": 1.0,
-            })
+            }
+
+    def add_title(
+        self,
+        text: str,
+        style: SubtitleStyle | None = None,
+        start: float = 0.0,
+        end: float | None = None,
+    ) -> None:
+        """영상을 대표하는 제목 한 장. 영상당 하나, 한 줄.
+
+        말하는 자막과 **같은 텍스트 트랙에 섞지 않는다.** 위치가 달라
+        한 트랙에 두면 캡컷 안에서 한꺼번에 옮기기가 불편해진다.
+        """
+        line = " ".join(text.split())
+        if not line:
+            return
+        if end is None:
+            end = max(self.timeline_us / US, start + 1.0)
+        if end <= start:
+            return
+        assert self.canvas is not None
+        style = style or SubtitleStyle.from_pixels(TITLE_Y_PX, self.canvas.height)
+        cue = SubtitleCue(start, end, line)
+        material_id = new_id()
+        self._materials["texts"].append(self._text_material(cue, style, material_id))
+        self._title_segments.append(
+            self._text_segment(cue, style, material_id, _TITLE_RENDER_BASE)
+        )
 
     def _video_segment(
         self, material_id: str, source_start_us: int, length_us: int,
@@ -523,6 +604,10 @@ class DraftBuilder:
             tracks.append(track("audio", self._audio_segments))
         if self._text_segments:
             tracks.append(track("text", self._text_segments))
+        if self._title_segments:
+            # 위치가 다르므로 말하는 자막과 트랙을 나눈다. 캡컷 안에서
+            # 한쪽만 통째로 옮기거나 끄기 쉬워진다.
+            tracks.append(track("text", self._title_segments))
         return tracks
 
     def timeline_json(self) -> dict:
@@ -657,9 +742,67 @@ class DraftBuilder:
             "type": 0, "width": 0,
         }
 
-    def write(self, root: Path) -> Path:
+    def _stage_media(self, folder: Path, mode: MediaMode) -> dict[str, str]:
+        """미디어를 드래프트 폴더 안으로 들인다. {원본경로: 새경로} 를 돌려준다.
+
+        지뢰 8번. macOS 캡컷이 샌드박스 밖 파일을 못 읽는다. 하드링크면 용량이
+        늘지 않고, 다른 볼륨이라 하드링크가 안 되면 복사로 떨어진다.
+        """
+        if mode == "none":
+            return {}
+
+        materials = folder / MATERIALS_DIRNAME
+        materials.mkdir(parents=True, exist_ok=True)
+        mapping: dict[str, str] = {}
+        used: set[str] = set()
+
+        sources = [m["path"] for m in self._materials["videos"]]
+        sources += [m["path"] for m in self._materials["audios"]]
+
+        for raw in sources:
+            if raw in mapping:
+                continue
+            source = Path(raw)
+            if not source.is_file():
+                # 원본이 없으면 손댈 게 없다. 경로를 그대로 둔다.
+                continue
+            name = source.name
+            stem, suffix = source.stem, source.suffix
+            counter = 1
+            while name in used:
+                name = f"{stem}-{counter}{suffix}"
+                counter += 1
+            used.add(name)
+            target = materials / name
+            mapping[raw] = _native_path(target)
+            if target.exists():
+                continue
+            if mode in ("auto", "link"):
+                try:
+                    os.link(source, target)
+                    continue
+                except OSError:
+                    if mode == "link":
+                        raise
+            shutil.copy2(source, target)
+        return mapping
+
+    def _rewrite_paths(self, mapping: dict[str, str]) -> None:
+        for material in self._materials["videos"] + self._materials["audios"]:
+            replacement = mapping.get(material["path"])
+            if replacement:
+                material["path"] = replacement
+        for entry in self._meta_entries:
+            replacement = mapping.get(entry["file_Path"])
+            if replacement:
+                entry["file_Path"] = replacement
+
+    def write(self, root: Path, media_mode: MediaMode | None = None) -> Path:
         folder = root / self.name
         folder.mkdir(parents=True, exist_ok=True)
+
+        mode = media_mode or default_media_mode()
+        self._rewrite_paths(self._stage_media(folder, mode))
 
         timeline = self.timeline_json()
         # 지뢰 1번: 버전마다 읽는 파일 이름이 달라 두 이름으로 같은 내용을 쓴다.

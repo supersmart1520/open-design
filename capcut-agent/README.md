@@ -172,8 +172,28 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 
 ```bash
 python -m capcut_agent.cli caption --inbox          # inbox 전체 (파일명 안 적어도 됨)
+python -m capcut_agent.cli caption --inbox --cut    # 무음 컷까지 같이
 python -m capcut_agent.cli caption 영상.mp4          # 파일 하나
 ```
+
+자막은 두 트랙으로 나옵니다.
+
+| 트랙 | 내용 | 기본 세로 위치 |
+|---|---|---|
+| 말하는 자막 | 전사한 말, 여러 장 | `y = -850px` |
+| 제목 | 영상당 **1장, 1줄** | `y = +1400px` |
+
+가로는 둘 다 `x = 0`(가운데) 고정입니다. 제목은 생략하면 대본에서 뽑고,
+`--title "문구"` 로 직접 지정할 수 있습니다. `--no-title` 로 끌 수 있습니다.
+
+> ### ⚠️ 위치 픽셀 값은 캔버스 높이에 묶여 있습니다
+> 캡컷 UI 가 보여주는 px 는 **그 프로젝트 캔버스 기준**입니다. 드래프트 JSON 은
+> 정규화 값(절반 높이 = 1)을 쓰므로, 이 도구가 캔버스 높이로 환산합니다.
+>
+> 아이폰 4K 세로(2160×3840) 원본을 **원본 비율 그대로** 쓰면 `-850` / `+1400` 이
+> 의도한 자리에 떨어집니다. 하지만 `--shorts`(1080×1920)로 만들면 범위가
+> ±960px 라 `+1400` 은 **화면 밖**입니다. 그런 경우 실행 중에 경고와 함께
+> 이 캔버스에 맞는 대체 수치를 알려줍니다.
 
 ```
 입력      : 영상.mp4
@@ -194,6 +214,11 @@ python -m capcut_agent.cli caption 영상.mp4          # 파일 하나
 | `--subtitle-y -0.55` | 자막을 더 위로 (하단 UI가 가릴 때) |
 | `--srt` | SRT 도 같이 내보내기 |
 | `--inbox` | inbox 안의 영상을 전부 처리 |
+| `--cut` | 무음 구간도 같이 잘라낸다 |
+| `--title "문구"` | 제목 직접 지정 (생략하면 대본에서 뽑음) |
+| `--no-title` | 제목 자막 없이 |
+| `--speech-y` / `--title-y` | 세로 위치 (캔버스 px, 중앙 0, 위가 양수) |
+| `--media-mode` | 미디어 반입 방식 (`auto`/`link`/`copy`/`none`) |
 
 `shorts` / `build` 와 **전사 캐시를 공유**합니다. 같은 영상이면 전사를 다시 돌리지 않습니다.
 
@@ -279,7 +304,7 @@ capcut-agent/
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
 │   └── cli.py          # check / cut / caption / shorts / build
-└── tests/              # pytest 153개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 185개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash
@@ -310,6 +335,19 @@ python -m pytest tests -q
 
 6. **캡컷 실행 중에는 목록이 갱신되지 않습니다.** 재시작해야 새 드래프트가 보입니다.
 
+6-1. **macOS 캡컷은 샌드박스 안에서 돕니다.**
+   컨테이너 밖 경로(`~/CapCutAgent/inbox/` 등)를 못 읽어 *"파일에 액세스할 수 없음 /
+   Unsupported Media"* 로 뜹니다. UI 로 가져오면 macOS 가 파일 선택 창을 통해 권한을
+   주지만, 손으로 쓴 드래프트에는 그게 없습니다. 그래서 미디어를 **드래프트 폴더 안**
+   (`materials/`) 으로 들여놓고 그 경로를 가리킵니다. 같은 볼륨이면 하드링크라
+   용량이 늘지 않습니다.
+
+6-2. **아이폰 세로 영상은 회전 메타데이터를 씁니다.**
+   `.MOV` 가 `1920x1080 + rotate 90°` 로 저장돼, 회전을 무시하면 세로 영상을
+   가로 캔버스에 넣어 비율이 통째로 뒤집힙니다. ffprobe 는 두 가지 방식으로
+   알려줍니다 — 예전 `tags.rotate`, 요즘 `side_data_list[].rotation`(Display Matrix,
+   반시계 음수). 둘 다 읽습니다.
+
 7. **원본 이동은 드래프트 생성보다 먼저.**
    드래프트는 미디어의 절대경로를 박아 넣습니다. 드래프트를 쓴 **뒤에** 원본을
    `done/` 으로 옮기면, 캡컷이 프로젝트를 열 때 *"미디어를 찾을 수 없다"* 며
@@ -320,6 +358,9 @@ python -m pytest tests -q
 
 8. **ASR 은 `asyncio.Lock` 으로 직렬화.** numba 가 스레드 안전하지 않아 동시 호출 시 segfault.
 9. **ASR 캐시 키는 content hash.** mtime 기반은 업로드마다 miss 납니다.
+
+9-0. **선행 공백이 하나도 없으면 어절 병합을 멈춰야 합니다.**
+   공백을 떼고 주는 백엔드에 병합을 그대로 돌리면 문장 전체가 한 어절로 뭉칩니다.
 
 9-1. **whisper 는 한국어 어절을 쪼갠다.** `"순서" + "가"`, `"중요합니" + "다"` 처럼
    갈라져 나오면 자막 줄바꿈이 전부 어긋납니다. 복원 단서는 whisper BPE 의

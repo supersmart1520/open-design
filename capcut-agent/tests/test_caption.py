@@ -98,11 +98,19 @@ def _timeline(draft_root: Path) -> dict:
     return json.loads((folder / "draft_content.json").read_text("utf-8"))
 
 
+def _text_tracks(draft_root: Path) -> list[dict]:
+    return [t for t in _timeline(draft_root)["tracks"] if t["type"] == "text"]
+
+
+def _speech_track(draft_root: Path) -> dict:
+    """말하는 자막 트랙. 제목 트랙(세그먼트 1개)과 구분한다."""
+    tracks = _text_tracks(draft_root)
+    return max(tracks, key=lambda t: len(t["segments"]))
+
+
 def test_caption_builds_a_draft_with_a_text_track(stub_probe, ws, draft_root, video):
     assert _run(ws, draft_root, video) == 0
-    tracks = {t["type"]: t for t in _timeline(draft_root)["tracks"]}
-    assert "text" in tracks
-    assert len(tracks["text"]["segments"]) >= len(LINES)
+    assert len(_speech_track(draft_root)["segments"]) >= len(LINES)
 
 
 def test_caption_keeps_the_whole_video_as_one_clip(stub_probe, ws, draft_root, video):
@@ -139,22 +147,36 @@ def test_shorts_flag_switches_to_a_vertical_canvas(stub_probe, ws, draft_root, v
     assert timeline["materials"]["videos"][0]["crop_ratio"] == "9:16"
 
 
-def test_subtitle_position_is_honoured(stub_probe, ws, draft_root, video):
-    _run(ws, draft_root, video, ["--subtitle-y", "-0.5"])
-    text_track = [t for t in _timeline(draft_root)["tracks"] if t["type"] == "text"][0]
-    assert text_track["segments"][0]["clip"]["transform"]["y"] == pytest.approx(-0.5)
+def test_speech_subtitle_position_is_given_in_canvas_pixels(stub_probe, ws, draft_root, video):
+    """캡컷 UI 가 보여주는 픽셀을 그대로 받는다. 소스가 1080 세로이므로 절반은 540."""
+    _run(ws, draft_root, video, ["--speech-y", "-270"])
+    y = _speech_track(draft_root)["segments"][0]["clip"]["transform"]["y"]
+    assert y == pytest.approx(-270 / 540)
+
+
+def test_speech_subtitles_default_to_the_agreed_position(stub_probe, ws, draft_root, video):
+    from capcut_agent.draft import SPEECH_Y_PX
+
+    _run(ws, draft_root, video)
+    y = _speech_track(draft_root)["segments"][0]["clip"]["transform"]["y"]
+    assert y == pytest.approx(SPEECH_Y_PX / 540)
+
+
+def test_subtitles_are_horizontally_centred(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video)
+    assert _speech_track(draft_root)["segments"][0]["clip"]["transform"]["x"] == 0.0
 
 
 def test_shorter_lines_produce_more_cues(stub_probe, ws, draft_root, video):
     _run(ws, draft_root, video, ["--max-chars", "8"])
-    many = len([t for t in _timeline(draft_root)["tracks"] if t["type"] == "text"][0]["segments"])
+    many = len(_speech_track(draft_root)["segments"])
     for folder in draft_root.iterdir():
         if folder.is_dir():
             for item in folder.iterdir():
                 item.unlink()
             folder.rmdir()
     _run(ws, draft_root, video, ["--max-chars", "24"])
-    few = len([t for t in _timeline(draft_root)["tracks"] if t["type"] == "text"][0]["segments"])
+    few = len(_speech_track(draft_root)["segments"])
     assert many > few
 
 
@@ -276,3 +298,110 @@ def test_an_empty_inbox_is_not_an_error(stub_probe, ws, draft_root, video):
 
 def test_neither_a_path_nor_inbox_is_a_usage_error(stub_probe, ws, draft_root):
     assert _run_main(ws, draft_root, []) == 2
+
+
+# --------------------------------------------------------- 제목 자막
+
+
+def _title_track(draft_root: Path) -> dict:
+    tracks = _text_tracks(draft_root)
+    assert len(tracks) == 2, "말하는 자막 트랙과 제목 트랙이 따로 있어야 합니다"
+    return min(tracks, key=lambda t: len(t["segments"]))
+
+
+def test_a_title_is_added_by_default(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video)
+    assert len(_title_track(draft_root)["segments"]) == 1
+
+
+def test_the_title_is_exactly_one_line(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "테슬라 공중부양\n영상 만들기"])
+    timeline = _timeline(draft_root)
+    segment = _title_track(draft_root)["segments"][0]
+    material = next(m for m in timeline["materials"]["texts"]
+                    if m["id"] == segment["material_id"])
+    assert "\n" not in json.loads(material["content"])["text"]
+
+
+def test_an_explicit_title_wins_over_the_derived_one(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "내가 정한 제목"])
+    timeline = _timeline(draft_root)
+    segment = _title_track(draft_root)["segments"][0]
+    material = next(m for m in timeline["materials"]["texts"]
+                    if m["id"] == segment["material_id"])
+    assert json.loads(material["content"])["text"] == "내가 정한 제목"
+
+
+def test_the_title_sits_at_the_agreed_position(stub_probe, ws, draft_root, video):
+    from capcut_agent.draft import TITLE_Y_PX
+
+    _run(ws, draft_root, video, ["--title", "제목"])
+    y = _title_track(draft_root)["segments"][0]["clip"]["transform"]["y"]
+    assert y == pytest.approx(TITLE_Y_PX / 540)
+
+
+def test_the_title_spans_the_whole_timeline(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "제목"])
+    timeline = _timeline(draft_root)
+    segment = _title_track(draft_root)["segments"][0]
+    assert segment["target_timerange"]["start"] == 0
+    assert segment["target_timerange"]["duration"] == timeline["duration"]
+
+
+def test_no_title_leaves_a_single_text_track(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--no-title"])
+    assert len(_text_tracks(draft_root)) == 1
+
+
+def test_the_title_renders_above_the_speech_subtitles(stub_probe, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--title", "제목"])
+    title = _title_track(draft_root)["segments"][0]["render_index"]
+    speech = _speech_track(draft_root)["segments"][0]["render_index"]
+    assert title > speech
+
+
+# ----------------------------------------------------- 컷 + 자막 동시
+
+
+@pytest.fixture
+def stub_silence(monkeypatch):
+    """말 3구간 사이에 무음이 있는 영상인 것처럼."""
+    monkeypatch.setattr(
+        cli, "detect_silence_raw",
+        lambda *a, **k: "silence_start: 3.6\nsilence_end: 4.4\n",
+    )
+
+
+def test_cut_flag_produces_multiple_video_segments(stub_probe, stub_silence, ws, draft_root, video):
+    assert _run(ws, draft_root, video, ["--cut"]) == 0
+    assert len(_timeline(draft_root)["tracks"][0]["segments"]) == 2
+
+
+def test_without_cut_the_video_stays_whole(stub_probe, stub_silence, ws, draft_root, video):
+    _run(ws, draft_root, video)
+    assert len(_timeline(draft_root)["tracks"][0]["segments"]) == 1
+
+
+def test_cut_shortens_the_timeline(stub_probe, stub_silence, ws, draft_root, video):
+    _run(ws, draft_root, video, ["--cut"])
+    with_cut = _timeline(draft_root)["duration"]
+    for folder in [p for p in draft_root.iterdir() if p.is_dir()]:
+        for item in folder.rglob("*"):
+            if item.is_file():
+                item.unlink()
+        for item in sorted(folder.rglob("*"), reverse=True):
+            if item.is_dir():
+                item.rmdir()
+        folder.rmdir()
+    _run(ws, draft_root, video)
+    assert with_cut < _timeline(draft_root)["duration"]
+
+
+def test_subtitles_never_outlast_a_cut_timeline(stub_probe, stub_silence, ws, draft_root, video):
+    """잘라낸 만큼 자막도 앞으로 당겨져야 한다. 안 그러면 끝에서 어긋난다."""
+    _run(ws, draft_root, video, ["--cut"])
+    timeline = _timeline(draft_root)
+    for track in _text_tracks(draft_root):
+        for segment in track["segments"]:
+            span = segment["target_timerange"]
+            assert span["start"] + span["duration"] <= timeline["duration"] + 1

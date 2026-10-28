@@ -70,6 +70,15 @@ def merge_eojeol(words: list[Word], min_duration: float = MIN_DURATION) -> list[
     입력의 `text` 는 **선행 공백이 보존된 원문**이어야 한다. 미리 strip 하면
     어절 경계 신호가 사라져 아무것도 합쳐지지 않는다.
     """
+    # 안전장치: 선행 공백이 **하나도** 없으면 그 백엔드는 공백을 떼고 준다는 뜻이다.
+    # 그대로 합치면 문장 전체가 한 어절로 뭉쳐 자막이 붙어버린다.
+    # 그럴 땐 합치지 않고 토막을 그대로 어절로 본다.
+    if words and not any(_LEADING_SPACE.match(w.text) for w in words):
+        return _apply_invariants(
+            [{"text": w.text, "start": w.start, "end": w.end} for w in words],
+            min_duration,
+        )
+
     merged: list[dict] = []
     pending_punct = ""
     pending_start: float | None = None
