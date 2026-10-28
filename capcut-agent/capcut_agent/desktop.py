@@ -123,7 +123,8 @@ def run(workspace: Path, draft_dir: str | None = None,
         if how == "browser":
             on_message("")
             on_message("네이티브 창 대신 브라우저로 열었습니다.")
-            on_message("창으로 띄우려면:  python3 -m pip install pywebview")
+            on_message("창으로 띄우려면 (선택):  python3 -m pip install pywebview")
+            on_message("  — 빌드가 깨지면 그냥 두세요. 기능은 같습니다.")
             on_message("종료하려면 Ctrl+C")
             # 브라우저로 열었으면 창 닫힘 신호가 없다. 사용자가 끊을 때까지 둔다.
             while True:

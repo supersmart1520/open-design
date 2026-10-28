@@ -986,8 +986,7 @@ def run_app(args, workspace) -> int:
         import uvicorn  # noqa: F401
     except ImportError:
         print("앱 실행에는 추가 패키지가 필요합니다:", file=sys.stderr)
-        print("  python3 -m pip install fastapi 'uvicorn[standard]' pywebview",
-              file=sys.stderr)
+        print(f"  {install_hint()}", file=sys.stderr)
         return 1
 
     from .desktop import run as run_desktop
@@ -1015,6 +1014,18 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 
 #: 앱이 남기는 기록. .app 안에서는 터미널 출력이 아무 데도 안 보인다.
 APP_LOG = "~/CapCutAgent/app.log"
+
+#: 네이티브 창은 **선택**이다. `pywebview` 는 `pyobjc` 를 소스에서 빌드하는데,
+#: Xcode 가 들고 오는 파이썬 3.9 에서는 컴파일이 깨진다. 이걸 필수 패키지와
+#: 같은 줄에 적으면 pip 가 하나만 실패해도 **전부** 설치하지 않아서, 꼭 필요한
+#: fastapi/uvicorn 까지 같이 날아간다. 그래서 줄을 나눈다.
+WINDOW_NOTE = "창으로 띄우려면 (선택):  python3 -m pip install pywebview"
+WINDOW_FALLBACK = "  — 빌드가 깨지면 그냥 두세요. 브라우저로 열립니다."
+
+
+def install_hint(python: str = "python3") -> str:
+    """앱과 대시보드에 반드시 필요한 것만."""
+    return f"{python} -m pip install fastapi 'uvicorn[standard]'"
 
 
 def _mac_launcher(package_dir: Path, python: str) -> str:
@@ -1134,12 +1145,13 @@ def run_install_app(args) -> int:
     if missing:
         # 이게 빠진 채로 더블클릭하면 창이 안 뜨고 끝난다.
         print(f"⚠ 아직 실행되지 않습니다 — 빠진 패키지: {', '.join(missing)}")
-        print(f"  {python} -m pip install fastapi 'uvicorn[standard]' pywebview")
-        print()
+        print(f"  {install_hint(python)}")
     else:
         print("더블클릭하면 창이 열립니다.")
-        print("네이티브 창으로 띄우려면:  python3 -m pip install pywebview")
-        print()
+    print()
+    print(WINDOW_NOTE)
+    print(WINDOW_FALLBACK)
+    print()
     print("열리지 않으면 터미널에서 직접 실행해 오류를 보세요:")
     print(f'  "{target}/Contents/MacOS/launch"'
           if str(target).endswith(".app") else f'  "{target}"')
@@ -1192,7 +1204,7 @@ def run_serve(args, workspace) -> int:
         import uvicorn
     except ImportError:
         print("대시보드에는 추가 패키지가 필요합니다:", file=sys.stderr)
-        print("  python3 -m pip install fastapi 'uvicorn[standard]'", file=sys.stderr)
+        print(f"  {install_hint()}", file=sys.stderr)
         return 1
 
     from .web.app import create_app

@@ -212,7 +212,7 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 아이콘을 더블클릭하면 창이 열립니다. 터미널을 열 필요가 없습니다.
 
 ```bash
-python -m pip install fastapi "uvicorn[standard]" pywebview
+python -m pip install fastapi "uvicorn[standard]"
 python -m capcut_agent.cli install-app     # 앱 아이콘 만들기
 ```
 
@@ -222,12 +222,29 @@ python -m capcut_agent.cli install-app     # 앱 아이콘 만들기
 | Windows | 바탕화면 `캡컷 에이전트.cmd` |
 | 그 외 | 바탕화면 `캡컷 에이전트.sh` |
 
-`pywebview` 가 없으면 기본 브라우저로 열립니다. 기능은 같고 창 모양만 다릅니다.
+네이티브 창은 **선택**입니다. 없으면 기본 브라우저로 열리고, 기능은 같습니다.
+
+```bash
+python -m pip install pywebview     # 선택 — 창 모양만 바뀝니다
+```
+
+> 이걸 위의 필수 패키지와 **같은 줄에 적지 마세요.** `pywebview` 는 `pyobjc` 를
+> 소스에서 빌드하는데, Xcode 가 들고 오는 파이썬 3.9 에서는 컴파일이 깨집니다
+> (`-Wdefault-const-init-var-unsafe`). pip 는 하나가 실패하면 **전부** 설치하지
+> 않으므로, 꼭 필요한 `fastapi`/`uvicorn` 까지 같이 날아갑니다.
+> 빌드가 깨지면 그냥 두세요 — 브라우저로 열립니다.
 
 > 앱 아이콘에는 **지금의 파이썬 경로와 패키지 위치가 굳어** 들어갑니다.
 > 저장소를 다른 폴더로 옮기면 `install-app` 을 다시 실행하세요.
 
 터미널에서 바로 띄우려면 `python -m capcut_agent.cli app`.
+
+아이콘을 눌렀는데 아무 일도 안 일어나면, 기록이 `~/CapCutAgent/app.log` 에
+남습니다. 런처를 터미널에서 직접 실행하면 오류가 그대로 보입니다:
+
+```bash
+"$HOME/Applications/캡컷 에이전트.app/Contents/MacOS/launch"
+```
 
 ---
 

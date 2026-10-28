@@ -5,9 +5,15 @@
 #   Mac M칩   : pip install mlx-whisper
 #   그 외     : pip install faster-whisper
 
-# 로컬 대시보드 (serve)
+# 로컬 대시보드 (serve) / PC 앱 (app)
 fastapi>=0.110
 uvicorn[standard]>=0.27
+
+# 네이티브 창 — 선택. 없으면 기본 브라우저로 열리고 기능은 같습니다.
+# 일부러 여기 적지 않았습니다. pywebview 는 pyobjc 를 소스에서 빌드하는데
+# Xcode 가 들고 오는 파이썬 3.9 에서는 컴파일이 깨지고, 그러면 pip 가
+# 위의 fastapi/uvicorn 까지 설치하지 않습니다. 필요하면 따로:
+#   pip install pywebview
 
 # 개발용
 pytest>=8.0
