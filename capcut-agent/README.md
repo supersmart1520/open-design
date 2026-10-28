@@ -130,9 +130,37 @@ OS를 감지해 트랙을 판정하고, 저장소 경로와 각 폴더의 파일
 
 | 항목 | Mac | Windows |
 |---|---|---|
-| Python 3.9+ | macOS 기본 파이썬으로 충분 (Xcode 번들 3.9) | [python.org](https://www.python.org/downloads/) |
+| Python 3.9+ | `brew install python@3.12` + venv (아래) | [python.org](https://www.python.org/downloads/) |
 | ffmpeg / ffprobe | `brew install ffmpeg` | `winget install --id Gyan.FFmpeg -e` |
 | 캡컷 드래프트 폴더 | 캡컷 설치 후 **1회 실행**해 프로젝트 1개 생성 | 동일 |
+
+#### macOS — venv 로 깐다
+
+Xcode 가 들고 오는 파이썬(`/Applications/Xcode.app/.../python3`)은 **쓰지 마세요.**
+universal2 라 arm64 로도 x86_64 로도 뜨는데, `pip` 는 한쪽 휠만 깝니다. 터미널에서는
+되던 것이 `.app` 안에서는 `incompatible architecture` 로 죽습니다.
+
+Homebrew 파이썬은 시스템 전역 설치를 막습니다 (PEP 668). venv 가 정답입니다:
+
+```bash
+brew install python@3.12 ffmpeg
+
+PY=/opt/homebrew/opt/python@3.12/bin/python3.12
+VENV="$HOME/CapCutAgent/venv"
+
+"$PY" -m venv "$VENV"
+"$VENV/bin/python" -m pip install fastapi "uvicorn[standard]" mlx-whisper
+```
+
+이후 모든 명령은 `"$VENV/bin/python" -m capcut_agent.cli ...` 로 부릅니다.
+앱 아이콘도 이 파이썬으로 굳힙니다:
+
+```bash
+"$VENV/bin/python" -m capcut_agent.cli install-app --python "$VENV/bin/python"
+```
+
+venv 를 `~/CapCutAgent/` 안에 두는 건 일부러입니다 — 코드 저장소를 다시
+클론해도 살아남습니다.
 
 ---
 
