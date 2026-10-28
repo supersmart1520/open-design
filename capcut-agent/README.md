@@ -39,6 +39,13 @@ setx CAPCUT_AGENT_HOME "D:\영상작업"
 **완성된 드래프트는 이 저장소에 두지 않습니다.** 캡컷이 읽어야 하므로 캡컷 자신의
 드래프트 폴더에 직접 씁니다. 저장소는 입력과 기록만 맡습니다.
 
+> ### ⚠️ `done/` 은 미디어의 영구 주소입니다
+> 드래프트에는 영상의 **절대경로가 박혀 들어갑니다.** 그래서 원본을 `done/` 으로
+> 먼저 옮기고, 드래프트가 그 최종 위치를 가리키게 합니다.
+> **`done/` 안의 파일을 지우거나 옮기면 이미 만든 캡컷 프로젝트가 미디어를 잃습니다.**
+> 원본을 다른 곳에서 관리하고 싶으면 `--keep-source` 로 inbox 에 남겨두거나,
+> inbox 밖에 둔 파일을 경로로 직접 지정하세요 — inbox 밖의 파일은 이동시키지 않습니다.
+
 ```
 # Windows — 캡컷 드래프트 폴더
 %LOCALAPPDATA%\CapCut\User Data\Projects\com.lveditor.draft
@@ -149,6 +156,7 @@ inbox 밖의 파일은 이동시키지 않습니다.
 |---|---|---|
 | **1단** | `silence_detect` + `build_draft` → 점프컷 드래프트 (UI 없음) | **완료 · 캡컷 재생 검증 대기** |
 | **1.5단** | 파일 저장소 (inbox / done / failed / reports / config) | **완료** |
+| **1.6단** | 미디어 경로 버그 수정 — 드래프트가 이동 후 경로를 가리키게 | **완료 · 재생 검증 대기** |
 | 2단 | FastAPI + 정적 HTML 1장 (drag/drop + SSE stepper) | 예정 |
 | 3단 | whisper Transcript(세그먼트+단어) + 세그먼트 단위 자막 | 예정 |
 | 4단 | `filler_ng` + `cuts` (잔말/NG 통합 컷) + 결과 카드 transcript 노출 | 예정 |
@@ -170,7 +178,7 @@ capcut-agent/
 │   ├── silence.py     # 무음 → 보존 구간 (순수 로직, 단위테스트 대상)
 │   ├── draft.py       # 캡컷 드래프트 빌더
 │   └── cli.py         # 1단 엔트리
-└── tests/             # pytest 38개 — ffmpeg 없이도 도는 순수 로직 테스트
+└── tests/             # pytest 47개 — ffmpeg 없이도 도는 순수 로직 테스트
 ```
 
 ```bash
@@ -201,9 +209,15 @@ python -m pytest tests -q
 
 6. **캡컷 실행 중에는 목록이 갱신되지 않습니다.** 재시작해야 새 드래프트가 보입니다.
 
+7. **원본 이동은 드래프트 생성보다 먼저.**
+   드래프트는 미디어의 절대경로를 박아 넣습니다. 드래프트를 쓴 **뒤에** 원본을
+   `done/` 으로 옮기면, 캡컷이 프로젝트를 열 때 *"미디어를 찾을 수 없다"* 며
+   재연결을 요구합니다. 실사용에서 실제로 터진 버그이고,
+   `tests/test_cli.py::test_draft_points_at_a_file_that_actually_exists` 가 막고 있습니다.
+
 3단부터 붙을 것들 (아직 미구현):
 
-7. **ASR 은 `asyncio.Lock` 으로 직렬화.** numba 가 스레드 안전하지 않아 동시 호출 시 segfault.
-8. **ASR 캐시 키는 content hash.** mtime 기반은 업로드마다 miss 납니다.
-9. **자막 줄바꿈은 의존명사를 앞 어절에 붙여야 합니다** (`것`, `수`, `때`, `거` …).
-10. **자막 세로 위치는 `transform_y`.** 캡컷 좌표계는 화면 중앙이 0.
+8. **ASR 은 `asyncio.Lock` 으로 직렬화.** numba 가 스레드 안전하지 않아 동시 호출 시 segfault.
+9. **ASR 캐시 키는 content hash.** mtime 기반은 업로드마다 miss 납니다.
+10. **자막 줄바꿈은 의존명사를 앞 어절에 붙여야 합니다** (`것`, `수`, `때`, `거` …).
+11. **자막 세로 위치는 `transform_y`.** 캡컷 좌표계는 화면 중앙이 0.

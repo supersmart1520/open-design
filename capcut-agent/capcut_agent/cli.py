@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -68,13 +69,23 @@ def plan_cuts(media: MediaInfo, options: SilenceOptions) -> list[Range]:
 
 
 def _report_payload(
-    media: MediaInfo, options: SilenceOptions, keeps: list[Range], draft: Path | None
+    media: MediaInfo,
+    options: SilenceOptions,
+    keeps: list[Range],
+    draft: Path | None,
+    source_before: Path | None = None,
 ) -> dict:
     kept = sum(k.length for k in keeps)
+    moved_from = (
+        str(source_before)
+        if source_before is not None and source_before != media.path
+        else None
+    )
     return {
         "생성시각": datetime.now().isoformat(timespec="seconds"),
         "원본": {
             "경로": str(media.path),
+            "투입경로": moved_from,
             "해상도": f"{media.width}x{media.height}",
             "fps": media.fps,
             "길이초": round(media.duration, 3),
@@ -130,21 +141,27 @@ def process_one(
         return 0
 
     name = args.name or f"{media.path.stem}-{datetime.now():%m%d-%H%M%S}"
+
+    # 원본을 드래프트보다 **먼저** 옮긴다.
+    # 드래프트는 미디어의 절대경로를 박아 넣으므로, 쓴 다음에 원본을 옮기면
+    # 캡컷이 프로젝트를 열 때 "미디어를 찾을 수 없다"며 재연결을 요구한다.
+    source_before = media.path
+    if not args.keep_source:
+        moved = storage.archive(workspace, video, ok=True)
+        if moved != source_before:
+            media = replace(media, path=moved)
+            print(f"원본 이동 : {moved}")
+
     builder = DraftBuilder(media=media, name=name)
     builder.add_video_cuts(keeps)
     assert draft_root is not None  # --dry-run 이 아니면 호출부에서 이미 해결했다.
     folder = builder.write(draft_root)
 
     report = storage.write_report(
-        workspace, name, _report_payload(media, options, keeps, folder)
+        workspace, name, _report_payload(media, options, keeps, folder, source_before)
     )
     print(f"드래프트  : {folder}")
     print(f"기록      : {report}")
-
-    if not args.keep_source:
-        moved = storage.archive(workspace, video, ok=True)
-        if moved != media.path:
-            print(f"원본 이동 : {moved}")
     return 0
 
 
