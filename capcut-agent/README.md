@@ -1,10 +1,21 @@
 # 캡컷 에이전트
 
-한국어 토킹 영상 자동 편집기. **inbox 폴더에 영상을 던져 넣으면 캡컷 드래프트가 나옵니다.**
-캡컷을 열면 컷이 이미 잡힌 타임라인이 있고, 거기서부터는 사람이 손봅니다.
+영상을 캡컷 숏폼 드래프트로. 두 가지 모드로 돈다.
+
+| 모드 | 입력 | 하는 일 |
+|---|---|---|
+| **A · 강의 하이라이트** | 긴 강의 영상 | 전사 → 대본 → 숏폼 후보 추천 → **사람이 승인** → 9:16 드래프트 + 자막 |
+| **B · AI 보이스** | 대본 + B롤 클립 | 대본 → ElevenLabs 나레이션 → B롤 깔기 → 9:16 드래프트 + 자막 |
+| (보조) **cut** | 토킹 영상 | 무음만 걷어낸 가로 점프컷 드래프트 |
+
+캡컷을 열면 컷·자막이 이미 잡힌 타임라인이 있고, 거기서부터는 사람이 손봅니다.
 
 > **검증 기준: 빌드 성공은 검증이 아닙니다.**
 > 캡컷에서 직접 처음부터 끝까지 재생해 보는 것만 검증입니다.
+
+> **'유효한 부분'은 사람이 고릅니다.**
+> 모드 A 는 후보를 **추천만** 하고, 왜 추천했는지 근거를 같이 적습니다.
+> `"선택": true` 로 켠 것만 드래프트가 됩니다.
 
 ---
 
@@ -15,9 +26,13 @@
 ```
 ~/CapCutAgent/
 ├── inbox/        ← 원본 mp4 / mov 를 여기 던진다
+├── broll/        ← 모드 B 가 화면에 깔 B롤 클립 (이동하지 않음)
 ├── done/         ← 처리에 성공한 원본이 자동으로 옮겨진다
 ├── failed/       ← 처리에 실패한 원본이 옮겨진다
-├── reports/      ← 컷 계획 JSON (무엇을 왜 잘랐는지의 기록)
+├── scripts/      ← 대본 · 전사 · 숏폼 후보 교환 파일 (사람이 열어 고치는 곳)
+├── voice/        ← 합성된 나레이션 mp3 (문장 해시로 캐시)
+├── reports/      ← 무엇을 왜 잘랐는지의 기록
+├── cache/asr/    ← 전사 캐시 (키 = 파일 내용 해시)
 └── config.json   ← 기본 컷 옵션. 매번 플래그 치지 않아도 되게.
 ```
 
@@ -64,18 +79,16 @@ setx CAPCUT_AGENT_HOME "D:\영상작업"
 ### 0. 환경 + 저장소 점검
 
 ```bash
-python -m capcut_agent.cli --check
+python -m capcut_agent.cli check
 ```
 
 OS를 감지해 트랙을 판정하고, 저장소 경로와 각 폴더의 파일 수를 같이 보여줍니다.
 
-| OS / 아키텍처 | 트랙 | ASR 백엔드 (3단에서 사용) |
-|---|---|---|
-| Darwin arm64 | **A** — Mac M칩 | `mlx-whisper` |
-| Windows AMD64 | **C** — Windows (MP4 export 보너스) | `faster-whisper` |
-| 그 외 | fallback | `faster-whisper` |
-
-MISS 가 뜨면 옆에 설치 명령이 함께 나옵니다.
+| OS / 아키텍처 | 트랙 | ASR 백엔드 | 설치 |
+|---|---|---|---|
+| Darwin arm64 | **A** — Mac M칩 | `mlx-whisper` | `pip install mlx-whisper` |
+| Windows AMD64 | **C** — Windows | `faster-whisper` | `pip install faster-whisper` |
+| 그 외 | fallback | `faster-whisper` | `pip install faster-whisper` |
 
 | 항목 | Mac | Windows |
 |---|---|---|
@@ -83,53 +96,100 @@ MISS 가 뜨면 옆에 설치 명령이 함께 나옵니다.
 | ffmpeg / ffprobe | `brew install ffmpeg` | `winget install --id Gyan.FFmpeg -e` |
 | 캡컷 드래프트 폴더 | 캡컷 설치 후 **1회 실행**해 프로젝트 1개 생성 | 동일 |
 
-### 1. 컷 계획만 먼저 보기 (아무것도 쓰지 않습니다)
+---
+
+### 모드 A — 강의 영상에서 숏폼 뽑기
+
+**1단계. 전사하고 후보를 받는다**
 
 ```bash
-python -m capcut_agent.cli 영상.mp4 --dry-run
+python -m capcut_agent.cli shorts ~/CapCutAgent/inbox/강의.mp4
 ```
 
 ```
-입력      : 영상.mp4
-해상도    : 1920x1080 @ 30.0fps
-길이      : 12:04.30
+입력      : 강의.mp4
+길이      : 48:12.40
+  … 오디오 추출
+  … 전사 (mlx-whisper / mlx-community/whisper-large-v3-turbo)
 
-보존      : 87조각 / 08:51.20
-제거      : 03:13.10 (26.7%)
-컷 수     : 86
+대본      : ~/CapCutAgent/scripts/강의.대본.txt
+전사       : ~/CapCutAgent/scripts/강의.transcript.json  (312문장, 2841단어)
+후보       : ~/CapCutAgent/scripts/강의.shorts.json
 
-    1. 00:00.00 → 00:04.62  ( 4.62s)
-    2. 00:05.71 → 00:09.08  ( 3.37s)
-    ...
+  #1  04:12.30 → 04:43.10  (30.8s)  점수 10.0
+      왜 대부분이 이 단계에서 실패하는지 아시나요?
+      · 첫 문장에 후킹 표현: 왜, 아시나요
+      · 질문으로 시작
+      · 완결된 문장으로 끝남
+  #2  11:35.80 → 11:55.10  (19.3s)  점수  5.5
+      여기서 가장 중요한 핵심은 순서입니다.
+      ...
 ```
 
-토킹 영상은 보통 제거 비율 **20~30%** 가 정상입니다. 50%를 넘으면 `--noise-db` 를 낮추세요.
+전사는 **파일 내용 해시로 캐시**됩니다. 같은 영상을 다시 넣으면 전사를 안 돌립니다.
 
-### 2. inbox 째로 처리
+**2단계. 쓸 것만 켠다**
+
+`scripts/강의.shorts.json` 을 열어 쓸 후보의 `"선택"` 을 `true` 로 바꿉니다.
+`"시작"` / `"끝"` 초를 직접 고쳐도 됩니다.
+
+```json
+{
+  "번호": 1,
+  "선택": true,
+  "시작": 252.3,
+  "끝": 283.1,
+  "제목": "왜 대부분이 이 단계에서 실패하는지 아시나요?",
+  "점수": 10.0,
+  "근거": ["첫 문장에 후킹 표현: 왜, 아시나요", "질문으로 시작"],
+  "대본": "왜 대부분이 이 단계에서 실패하는지 아시나요? 이유는 세 가지입니다. ..."
+}
+```
+
+**3단계. 드래프트로 만든다**
 
 ```bash
-# 영상들을 ~/CapCutAgent/inbox/ 에 넣고
-python -m capcut_agent.cli --inbox
+python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 ```
 
-이름 순으로 전부 돌면서, 성공한 원본은 `done/` 으로, 실패한 건 `failed/` 로 옮깁니다.
-원본을 그대로 두고 싶으면 `--keep-source`.
+승인한 개수만큼 **9:16 세로 드래프트**가 생기고, 자막 트랙이 함께 들어갑니다.
 
-### 3. 파일 하나만
+| 옵션 | 쓸 때 |
+|---|---|
+| `--anchor top` | 인물이 화면 아래쪽에 잡힌 가로 화면녹화 |
+| `--anchor left` / `right` | 인물이 한쪽에 치우쳐 있을 때 |
+| `--subtitle-y -0.55` | 자막을 더 위로 (하단 UI가 가릴 때) |
+| `--max-chars 14` | 자막 한 줄을 더 짧게 |
+| `--no-subtitle` | 자막 없이 (캡컷 자동 캡션을 쓸 때) |
+| `--srt` | SRT 도 같이 내보내기 |
+
+---
+
+### 모드 B — AI 보이스로 숏폼 만들기
+
+아직 구현 중입니다. `broll/` 과 `voice/` 폴더는 미리 만들어져 있습니다.
+
+---
+
+### 보조 — 무음 컷만 (가로 그대로)
 
 ```bash
-python -m capcut_agent.cli "C:\Users\yeonj\Videos\내영상.mp4"
+python -m capcut_agent.cli cut 영상.mp4 --dry-run   # 컷 계획만
+python -m capcut_agent.cli cut --inbox              # inbox 전체
+python -m capcut_agent.cli 영상.mp4                  # 서브커맨드 생략 = cut
 ```
 
-inbox 밖의 파일은 이동시키지 않습니다.
+`--inbox` 는 이름 순으로 전부 돌면서 성공분은 `done/`, 실패분은 `failed/` 로 옮깁니다.
+원본을 그대로 두려면 `--keep-source`.
 
-### 4. 캡컷에서 확인 — 이게 진짜 검증입니다
+### 캡컷에서 확인 — 이게 진짜 검증입니다
 
 1. **캡컷이 켜져 있으면 완전히 종료 후 재실행** (실행 중엔 목록이 안 갱신됩니다)
 2. 홈 화면에서 방금 만든 프로젝트 열기
 3. 처음부터 끝까지 재생하며 확인:
    - 말 첫 음절이 잘려 나가지 않는가
-   - 컷이 너무 촘촘해 숨이 안 쉬어지지 않는가
+   - 자막이 말과 맞고, 하단 UI에 가리지 않는가
+   - 세로 크롭에 인물이 제대로 들어왔는가 (아니면 `--anchor` 를 바꿔 다시)
    - 홈 화면 길이가 `00:00` 이면 드래프트 생성 실패입니다
 
 ---
@@ -154,13 +214,14 @@ inbox 밖의 파일은 이동시키지 않습니다.
 
 | 단 | 내용 | 상태 |
 |---|---|---|
-| **1단** | `silence_detect` + `build_draft` → 점프컷 드래프트 (UI 없음) | **완료 · 캡컷 재생 검증 대기** |
-| **1.5단** | 파일 저장소 (inbox / done / failed / reports / config) | **완료** |
-| **1.6단** | 미디어 경로 버그 수정 — 드래프트가 이동 후 경로를 가리키게 | **완료 · 재생 검증 대기** |
-| 2단 | FastAPI + 정적 HTML 1장 (drag/drop + SSE stepper) | 예정 |
-| 3단 | whisper Transcript(세그먼트+단어) + 세그먼트 단위 자막 | 예정 |
-| 4단 | `filler_ng` + `cuts` (잔말/NG 통합 컷) + 결과 카드 transcript 노출 | 예정 |
-| 5단 | 영상 프리뷰 + 보존 구간 사용자 마킹 (`[` / `]` 단축키) | 예정 |
+| 1단 | `silence_detect` + `build_draft` → 점프컷 드래프트 | **완료 · 캡컷 재생 검증 대기** |
+| 1.5단 | 파일 저장소 (inbox / done / failed / scripts / reports / config) | **완료** |
+| 1.6단 | 미디어 경로 버그 수정 — 드래프트가 이동 후 경로를 가리키게 | **완료** |
+| 2단 | 숏폼 기반 — 9:16 프레이밍, 한국어 자막, 오디오 트랙 | **완료** |
+| 3단 | **모드 A** — 전사 → 대본 → 후보 추천 → 승인 → 숏폼 드래프트 | **완료 · 캡컷 재생 검증 대기** |
+| 4단 | **모드 B** — ElevenLabs 나레이션 + B롤 → 숏폼 드래프트 | 다음 |
+| 5단 | FastAPI + 정적 HTML 1장 (drag/drop + SSE stepper) | 예정 |
+| 6단 | 영상 프리뷰 + 보존 구간 사용자 마킹 (`[` / `]` 단축키) | 예정 |
 
 각 단은 **캡컷에서 실제 재생 검증을 통과한 뒤에만** 다음으로 넘어갑니다.
 
@@ -171,14 +232,18 @@ inbox 밖의 파일은 이동시키지 않습니다.
 ```
 capcut-agent/
 ├── capcut_agent/
-│   ├── env_check.py   # Step 0 — OS 감지, 트랙 판정, 도구 + 저장소 점검
-│   ├── storage.py     # 파일 저장소 (inbox / done / failed / reports / config)
-│   ├── paths.py       # 캡컷 드래프트 폴더 탐색 (Mac 샌드박스 포함)
-│   ├── media.py       # ffprobe / ffmpeg 래퍼
-│   ├── silence.py     # 무음 → 보존 구간 (순수 로직, 단위테스트 대상)
-│   ├── draft.py       # 캡컷 드래프트 빌더
-│   └── cli.py         # 1단 엔트리
-└── tests/             # pytest 47개 — ffmpeg 없이도 도는 순수 로직 테스트
+│   ├── env_check.py    # Step 0 — OS 감지, 트랙 판정, 도구 + 저장소 점검
+│   ├── storage.py      # 파일 저장소 (inbox / broll / scripts / voice / …)
+│   ├── paths.py        # 캡컷 드래프트 폴더 탐색 (Mac 샌드박스 포함)
+│   ├── media.py        # ffprobe / ffmpeg 래퍼
+│   ├── silence.py      # 무음 → 보존 구간 (순수 로직)
+│   ├── framing.py      # 9:16 세로 크롭 계산 (순수 로직)
+│   ├── subtitle.py     # 한국어 줄바꿈 · 큐 묶기 · SRT (순수 로직)
+│   ├── transcribe.py   # 로컬 whisper + 내용 해시 캐시 + ASR 락
+│   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
+│   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
+│   └── cli.py          # check / cut / shorts / build
+└── tests/              # pytest 110개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

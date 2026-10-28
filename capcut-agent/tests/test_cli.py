@@ -49,7 +49,9 @@ def draft_root(tmp_path: Path) -> Path:
 
 
 def _run(ws, draft_root, video: Path, extra: list[str] | None = None) -> int:
-    args = cli.build_parser().parse_args([str(video), *(extra or [])])
+    # main() 과 같은 경로로 파싱한다 — 하위호환 정규화를 포함해서.
+    argv = cli.normalize_argv([str(video), *(extra or [])])
+    args = cli.build_parser().parse_args(argv)
     options = cli.resolve_options(ws, args)
     return cli.process_one(video, ws, options, args, draft_root)
 
@@ -146,3 +148,38 @@ def test_cut_plan_survives_the_round_trip(stub_ffmpeg, ws, draft_root):
     assert payload["결과"]["컷수"] == 2
     # 꼬리 무음 2초 + 중간 무음 2.1초에서 패딩만큼 돌려받는다.
     assert 8.0 < payload["결과"]["출력길이초"] < 8.6
+
+
+# --------------------------------------------------- 하위호환 인자 정규화
+
+
+def test_a_bare_video_path_is_treated_as_cut():
+    assert cli.normalize_argv(["영상.mp4"]) == ["cut", "영상.mp4"]
+
+
+def test_bare_flags_are_treated_as_cut():
+    assert cli.normalize_argv(["--inbox"]) == ["cut", "--inbox"]
+    assert cli.normalize_argv(["영상.mp4", "--dry-run"]) == ["cut", "영상.mp4", "--dry-run"]
+
+
+def test_the_old_check_flag_maps_to_the_check_command():
+    assert cli.normalize_argv(["--check"]) == ["check"]
+
+
+def test_explicit_subcommands_pass_through_untouched():
+    for command in cli.SUBCOMMANDS:
+        assert cli.normalize_argv([command, "x"]) == [command, "x"]
+
+
+def test_help_passes_through():
+    assert cli.normalize_argv(["--help"]) == ["--help"]
+
+
+def test_a_leading_workspace_flag_is_kept_before_the_command():
+    assert cli.normalize_argv(["--workspace", "/tmp/ws", "영상.mp4"]) == [
+        "--workspace", "/tmp/ws", "cut", "영상.mp4"
+    ]
+
+
+def test_empty_argv_stays_empty():
+    assert cli.normalize_argv([]) == []

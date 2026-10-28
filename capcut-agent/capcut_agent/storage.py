@@ -51,12 +51,35 @@ class Workspace:
         return self.home / "reports"
 
     @property
+    def scripts(self) -> Path:
+        """대본과 숏폼 후보 교환 파일. 사람이 열어 고치는 곳."""
+        return self.home / "scripts"
+
+    @property
+    def broll(self) -> Path:
+        """모드 B 가 쓸 B롤 클립. 여기 넣은 건 처리 후에도 이동하지 않는다."""
+        return self.home / "broll"
+
+    @property
+    def voice(self) -> Path:
+        """합성된 나레이션 mp3. 문장 해시로 캐시된다."""
+        return self.home / "voice"
+
+    @property
+    def asr_cache(self) -> Path:
+        """전사 캐시. 키는 파일 내용 해시."""
+        return self.home / "cache" / "asr"
+
+    @property
     def config_path(self) -> Path:
         return self.home / "config.json"
 
     @property
     def folders(self) -> tuple[Path, ...]:
-        return (self.inbox, self.done, self.failed, self.reports)
+        return (
+            self.inbox, self.done, self.failed, self.reports,
+            self.scripts, self.broll, self.voice, self.asr_cache,
+        )
 
 
 def default_home() -> Path:
@@ -124,6 +147,20 @@ def list_inbox(workspace: Workspace) -> list[Path]:
     return sorted(found, key=lambda p: p.name.lower())
 
 
+def list_broll(workspace: Workspace) -> list[Path]:
+    """broll 폴더의 클립. 모드 B 가 화면에 깔 소스. 이동하지 않는다."""
+    if not workspace.broll.is_dir():
+        return []
+    found = [
+        path
+        for path in workspace.broll.iterdir()
+        if path.is_file()
+        and path.suffix.lower() in VIDEO_EXTS
+        and not path.name.startswith((".", "~"))
+    ]
+    return sorted(found, key=lambda p: p.name.lower())
+
+
 def _unique(target: Path) -> Path:
     """같은 이름이 이미 있으면 -1, -2 를 붙여 덮어쓰기를 막는다."""
     if not target.exists():
@@ -164,8 +201,11 @@ def describe(workspace: Workspace) -> str:
     lines = [f"저장소    : {workspace.home}"]
     for label, folder in (
         ("  inbox  ", workspace.inbox),
+        ("  broll  ", workspace.broll),
         ("  done   ", workspace.done),
         ("  failed ", workspace.failed),
+        ("  scripts", workspace.scripts),
+        ("  voice  ", workspace.voice),
         ("  reports", workspace.reports),
     ):
         count = len(list(folder.iterdir())) if folder.is_dir() else 0
