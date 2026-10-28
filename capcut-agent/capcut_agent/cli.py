@@ -85,7 +85,9 @@ def build_parser() -> argparse.ArgumentParser:
     caption = subparsers.add_parser(
         "caption", help="컷 없이 자막만 (전체 영상 + 자막 트랙)"
     )
-    caption.add_argument("video", help="영상 mp4 / mov")
+    caption.add_argument("video", nargs="?", help="영상 mp4 / mov")
+    caption.add_argument("--inbox", action="store_true",
+                         help="inbox 안의 영상을 전부 처리 (파일명을 안 적어도 된다)")
     caption.add_argument("--name", help="드래프트 이름")
     caption.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
     caption.add_argument("--language", default="ko", help="전사 언어 (기본 ko)")
@@ -281,13 +283,43 @@ def run_cut(args, workspace) -> int:
 
 
 def run_caption(args, workspace) -> int:
-    """컷 없이 자막만. 원본을 건드리지 않는다 — 옮기지도, 자르지도 않는다."""
+    """컷 없이 자막만. 여러 개면 하나씩 돌린다."""
     report = run_checks(workspace)
     if blocking_checks(report, args):
         print(format_report(report), file=sys.stderr)
         return 1
 
-    media = probe(args.video)
+    if args.video:
+        targets = [Path(args.video).expanduser()]
+    elif args.inbox:
+        targets = storage.list_inbox(workspace)
+        if not targets:
+            print(f"inbox 가 비어 있습니다: {workspace.inbox}")
+            return 0
+        print(f"inbox     : {len(targets)}개 처리")
+    else:
+        print("영상 경로나 --inbox 가 필요합니다.", file=sys.stderr)
+        return 2
+
+    failures = 0
+    for i, target in enumerate(targets):
+        if len(targets) > 1:
+            print(f"\n--- [{i + 1}/{len(targets)}] {target.name} ---")
+        try:
+            if caption_one(target, workspace, args) != 0:
+                failures += 1
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(f"실패: {target.name} — {exc}", file=sys.stderr)
+            failures += 1
+
+    if failures < len(targets):
+        _print_verify_steps()
+    return 1 if failures else 0
+
+
+def caption_one(video: Path, workspace, args) -> int:
+    """영상 하나에 자막만 얹는다. 원본은 건드리지 않는다 — 옮기지도, 자르지도 않는다."""
+    media = probe(video)
     print(f"입력      : {media.path.name}")
     print(f"해상도    : {media.width}x{media.height} @ {media.fps}fps")
     print(f"길이      : {_fmt(media.duration)}")
@@ -363,7 +395,6 @@ def run_caption(args, workspace) -> int:
                  else f"{media.width}x{media.height}",
         "드래프트": str(folder),
     })
-    _print_verify_steps()
     return 0
 
 

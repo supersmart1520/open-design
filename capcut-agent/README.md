@@ -171,7 +171,8 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 컷을 하나도 하지 않고, 전체 영상에 자막 트랙만 얹습니다. **원본을 옮기지도 않습니다.**
 
 ```bash
-python -m capcut_agent.cli caption 영상.mp4
+python -m capcut_agent.cli caption --inbox          # inbox 전체 (파일명 안 적어도 됨)
+python -m capcut_agent.cli caption 영상.mp4          # 파일 하나
 ```
 
 ```
@@ -192,6 +193,7 @@ python -m capcut_agent.cli caption 영상.mp4
 | `--max-chars 14` | 자막 한 줄을 더 짧게 |
 | `--subtitle-y -0.55` | 자막을 더 위로 (하단 UI가 가릴 때) |
 | `--srt` | SRT 도 같이 내보내기 |
+| `--inbox` | inbox 안의 영상을 전부 처리 |
 
 `shorts` / `build` 와 **전사 캐시를 공유**합니다. 같은 영상이면 전사를 다시 돌리지 않습니다.
 
@@ -277,7 +279,7 @@ capcut-agent/
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
 │   └── cli.py          # check / cut / caption / shorts / build
-└── tests/              # pytest 149개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 153개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

@@ -245,3 +245,34 @@ def test_other_blockers_are_never_skipped():
     report.checks.append(Check("ffmpeg", False, fix="brew install ffmpeg"))
     blockers = cli.blocking_checks(report, _Args(draft_dir="/tmp/drafts"))
     assert [c.name for c in blockers] == ["ffmpeg"]
+
+
+# ------------------------------------------------- inbox 일괄 처리
+
+
+def _run_main(ws, draft_root, extra: list[str]) -> int:
+    argv = cli.normalize_argv(["caption", *extra])
+    args = cli.build_parser().parse_args(argv)
+    args.draft_dir = str(draft_root)
+    return cli.run_caption(args, ws)
+
+
+def test_inbox_mode_needs_no_filename(stub_probe, ws, draft_root, video):
+    """파일명에 괄호·공백이 있어도 타이핑하지 않아도 되게."""
+    assert _run_main(ws, draft_root, ["--inbox"]) == 0
+    assert len([p for p in draft_root.iterdir() if p.is_dir()]) == 1
+
+
+def test_inbox_mode_leaves_the_sources_in_place(stub_probe, ws, draft_root, video):
+    _run_main(ws, draft_root, ["--inbox"])
+    assert video.is_file()
+    assert not any(ws.done.iterdir())
+
+
+def test_an_empty_inbox_is_not_an_error(stub_probe, ws, draft_root, video):
+    video.unlink()
+    assert _run_main(ws, draft_root, ["--inbox"]) == 0
+
+
+def test_neither_a_path_nor_inbox_is_a_usage_error(stub_probe, ws, draft_root):
+    assert _run_main(ws, draft_root, []) == 2
