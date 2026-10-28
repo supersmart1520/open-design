@@ -164,3 +164,74 @@ def test_a_zero_length_word_inside_a_keep_survives():
     from capcut_agent.silence import overlap_to_timeline
 
     assert overlap_to_timeline([Range(0.0, 2.0)], 1.0, 1.0) == (1.0, 1.0)
+
+
+# ------------------------------------------- 합침 (음량 + 단어 경계)
+
+
+def _silence_stderr(*pairs) -> str:
+    return "".join(f"silence_start: {a}\nsilence_end: {b}\n" for a, b in pairs)
+
+
+def test_hybrid_cuts_as_often_as_the_volume_detector():
+    """대본 기준은 whisper 의 늘어난 단어 끝 때문에 짧은 틈을 놓친다."""
+    from capcut_agent.silence import keeps_from_words, keeps_hybrid
+
+    stderr = _silence_stderr((0.0, 0.5), (3.0, 3.6), (6.0, 8.5), (11.0, 11.6))
+    # whisper 는 덩어리 마지막 단어의 끝을 다음 쪽으로 늘려 잡는다. 그래서
+    # 0.6초짜리 틈이 0.3초로 보이고 min_silence(0.35)에 안 걸린다.
+    words = [
+        _W(0.5, 2.4), _W(2.4, 3.3),
+        _W(3.6, 5.5), _W(5.5, 6.3),
+        _W(8.5, 10.4), _W(10.4, 11.3),
+        _W(11.6, 14.0),
+    ]
+    opts = SilenceOptions(padding=0.08, min_keep=0.3, min_gap=0.12)
+    hybrid = keeps_hybrid(stderr, words, 16.0, opts)
+    speech_only = keeps_from_words(words, 16.0, opts)
+    assert len(hybrid) > len(speech_only)
+
+
+def test_hybrid_never_slices_a_word():
+    """이게 깨지면 말은 남았는데 자막이 없는 구간이 생긴다."""
+    from capcut_agent.silence import keeps_hybrid, overlap_to_timeline
+
+    stderr = _silence_stderr((3.0, 3.6), (11.0, 11.6))
+    # 경계 바로 바깥까지 늘어난 단어들.
+    words = [_W(0.5, 3.3), _W(3.6, 6.0), _W(8.5, 11.3), _W(11.6, 14.0)]
+    keeps = keeps_hybrid(stderr, words, 16.0, SilenceOptions())
+    for word in words:
+        assert any(
+            word.start >= keep.start - 1e-6 and word.end <= keep.end + 1e-6
+            for keep in keeps
+        ), f"{word.start}~{word.end} 가 잘렸습니다"
+
+
+def test_snapping_widens_only_the_overlapping_keep():
+    from capcut_agent.silence import snap_to_words
+
+    keeps = [Range(0.0, 2.0), Range(5.0, 8.0)]
+    snapped = snap_to_words(keeps, [_W(1.5, 2.4)], 10.0)
+    assert snapped[0] == Range(0.0, 2.4)
+    assert snapped[1] == Range(5.0, 8.0)
+
+
+def test_snapping_merges_keeps_that_grow_into_each_other():
+    from capcut_agent.silence import snap_to_words
+
+    snapped = snap_to_words([Range(0.0, 2.0), Range(2.2, 4.0)], [_W(1.8, 2.3)], 10.0)
+    assert snapped == [Range(0.0, 4.0)]
+
+
+def test_snapping_without_words_changes_nothing():
+    from capcut_agent.silence import snap_to_words
+
+    keeps = [Range(0.0, 2.0)]
+    assert snap_to_words(keeps, [], 10.0) == keeps
+
+
+def test_snapping_stays_inside_the_clip():
+    from capcut_agent.silence import snap_to_words
+
+    snapped = snap_to_words([Range(8.0, 10.0)], [_W(9.0, 99.0)], 10.0)
+    assert snapped[0].end <= 10.0

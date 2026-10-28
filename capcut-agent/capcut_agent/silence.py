@@ -130,6 +130,44 @@ def keeps_from_words(words, duration: float, opts: SilenceOptions) -> list[Range
     return pad_and_tidy(merged, duration, opts)
 
 
+def snap_to_words(keeps: list[Range], words, duration: float) -> list[Range]:
+    """보존 구간의 경계를 단어 경계로 밀어낸다.
+
+    음량 기준 컷은 **많이** 자른다. 문장 중간의 숨·뜸까지 걷어내서 편집이
+    탄탄해진다. 대신 경계가 단어 한가운데 떨어질 수 있다.
+
+    대본 기준 컷은 단어를 자르지 않는다. 대신 **덜** 자른다 — whisper 가
+    덩어리 마지막 단어의 끝 시각을 다음 쪽으로 늘려 잡아서, 실제로는 비어
+    있는 구간이 짧은 틈으로 보이기 때문이다.
+
+    그래서 둘을 합친다. 자를 자리는 음량이 정하고, 경계는 단어를 통째로
+    품도록 밀어낸다. 많이 자르면서 말은 안 자른다.
+    """
+    if not keeps or not words:
+        return keeps
+
+    widened = [Range(k.start, k.end) for k in keeps]
+    for word in words:
+        if word.end <= word.start:
+            continue
+        for index, keep in enumerate(widened):
+            # 이 단어가 구간에 걸쳐 있으면, 구간을 넓혀 단어를 통째로 품는다.
+            if word.start < keep.end and word.end > keep.start:
+                widened[index] = Range(
+                    max(0.0, min(keep.start, word.start)),
+                    min(duration, max(keep.end, word.end)),
+                )
+                break
+    return merge(widened)
+
+
+def keeps_hybrid(stderr: str, words, duration: float, opts: SilenceOptions) -> list[Range]:
+    """음량으로 자를 자리를 정하고, 경계를 단어 경계로 밀어낸다."""
+    rough = invert(list(parse_silence(stderr, duration)), duration)
+    snapped = snap_to_words(rough, words, duration)
+    return pad_and_tidy(snapped, duration, opts)
+
+
 def overlap_to_timeline(
     keeps: list[Range], start: float, end: float
 ) -> tuple[float, float] | None:

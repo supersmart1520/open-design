@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import shutil
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -44,12 +45,14 @@ from .silence import (
     SilenceOptions,
     keeps_from_silence,
     keeps_from_words,
+    keeps_hybrid,
     overlap_to_timeline,
 )
 from .subtitle import Word, auto_max_chars, cues_from_words, fill_gaps, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
-SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build", "serve")
+SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build", "serve",
+                "install-skill")
 
 
 def _fmt(seconds: float) -> str:
@@ -121,9 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
                          help="자막 사이 빈틈을 메우지 않는다 (기본은 메움)")
     caption.add_argument("--cut", action="store_true",
                          help="말 없는 구간도 같이 잘라낸다")
-    caption.add_argument("--cut-by", choices=("speech", "silence"), default="speech",
-                         help="컷 기준. speech=대본의 단어 사이 틈(기본, 말이 안 잘림), "
-                              "silence=ffmpeg 음량 감지")
+    caption.add_argument("--cut-by", choices=("hybrid", "speech", "silence"),
+                         default="hybrid",
+                         help="컷 기준. hybrid(기본)=음량으로 자를 자리를 정하고 "
+                              "경계를 단어 경계로 밀어냄. speech=단어 사이 틈만. "
+                              "silence=음량만(말이 잘릴 수 있음)")
     caption.add_argument("--speech-y", type=float, default=SPEECH_Y_PX,
                          help="말하는 자막 세로 위치 (캔버스 픽셀, 중앙 0, 위가 양수). "
                               "기본 %(default)s")
@@ -157,6 +162,13 @@ def build_parser() -> argparse.ArgumentParser:
                        help="바인딩 주소 (기본 %(default)s — 바깥으로 열지 않는다)")
     serve.add_argument("--port", type=int, default=8765, help="포트 (기본 %(default)s)")
     serve.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
+
+    skill = subparsers.add_parser(
+        "install-skill", help="Claude Code 가 이 도구를 쓸 수 있게 스킬을 설치"
+    )
+    skill.add_argument("--dest", help="설치 위치 (기본 ~/.claude/skills/capcut-agent)")
+    skill.add_argument("--copy", action="store_true",
+                       help="심볼릭 링크 대신 복사한다 (저장소를 옮겨도 남는다)")
 
     build = subparsers.add_parser("build", help="승인한 후보 → 숏폼 드래프트")
     build.add_argument("plan", help="scripts/<이름>.shorts.json")
@@ -401,12 +413,17 @@ def caption_one(video: Path, workspace, args) -> int:
     if args.cut:
         options = resolve_options(workspace, args)
         by = args.cut_by
-        if by == "speech" and not transcript.words:
-            # 단어 타임스탬프가 없으면 대본으로 자를 수 없다.
-            print("  … 단어 타임스탬프가 없어 음량 감지로 자릅니다")
+        if by in ("hybrid", "speech") and not transcript.words:
+            # 단어 타임스탬프가 없으면 경계를 밀어낼 기준이 없다.
+            print("  … 단어 타임스탬프가 없어 음량 기준으로 자릅니다")
             by = "silence"
         if by == "speech":
             keeps = keeps_from_words(transcript.words, media.duration, options)
+        elif by == "hybrid":
+            stderr = detect_silence_raw(
+                media.path, options.noise_db, options.min_silence
+            )
+            keeps = keeps_hybrid(stderr, transcript.words, media.duration, options)
         else:
             keeps = plan_cuts(media, options)
         if not keeps:
@@ -415,7 +432,8 @@ def caption_one(video: Path, workspace, args) -> int:
             print(f"보존할 구간이 없습니다. {hint}", file=sys.stderr)
             return 1
         kept = sum(k.length for k in keeps)
-        label = "대본 기준" if by == "speech" else "음량 기준"
+        label = {"speech": "대본 기준", "hybrid": "음량+단어경계",
+                 "silence": "음량 기준"}[by]
         print(f"컷        : {len(keeps)}조각 / {_fmt(kept)} "
               f"({(1 - kept / media.duration) * 100:.1f}% 제거, {label})")
 
@@ -782,6 +800,44 @@ def run_build(args, workspace) -> int:
     return 0
 
 
+def run_install_skill(args) -> int:
+    """Claude Code 가 찾는 자리에 스킬을 놓는다.
+
+    기본은 심볼릭 링크다 — 저장소를 `git pull` 하면 스킬도 같이 최신이 된다.
+    저장소를 옮기거나 지울 거면 `--copy`.
+    """
+    source = Path(__file__).resolve().parent.parent / "SKILL.md"
+    if not source.is_file():
+        print(f"스킬 파일이 없습니다: {source}", file=sys.stderr)
+        return 1
+
+    destination = Path(args.dest).expanduser() if args.dest else (
+        Path.home() / ".claude" / "skills" / "capcut-agent"
+    )
+    destination.mkdir(parents=True, exist_ok=True)
+    target = destination / "SKILL.md"
+
+    if target.exists() or target.is_symlink():
+        target.unlink()
+    if args.copy:
+        shutil.copy2(source, target)
+        how = "복사"
+    else:
+        try:
+            target.symlink_to(source)
+            how = "링크"
+        except OSError:
+            shutil.copy2(source, target)
+            how = "복사 (링크 실패)"
+
+    print(f"설치 완료 : {target}  ({how})")
+    print(f"원본      : {source}")
+    print()
+    print("Claude Code 를 새로 시작하면 인식합니다. 이렇게 말해 보세요:")
+    print('  "inbox 영상에 자막 달고 무음 잘라줘"')
+    return 0
+
+
 def run_serve(args, workspace) -> int:
     """로컬 대시보드. 바깥으로 열지 않는다."""
     try:
@@ -837,6 +893,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_build(args, workspace)
     if args.command == "serve":
         return run_serve(args, workspace)
+    if args.command == "install-skill":
+        return run_install_skill(args)
     parser.print_help()
     return 2
 

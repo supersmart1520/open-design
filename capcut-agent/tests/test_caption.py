@@ -377,12 +377,18 @@ def test_cut_by_silence_follows_the_volume_detector(stub_probe, stub_silence, ws
     assert len(_timeline(draft_root)["tracks"][0]["segments"]) == 2
 
 
-def test_cut_by_speech_is_the_default_and_follows_the_transcript(
+def test_cut_by_speech_follows_the_transcript_gaps(
     stub_probe, stub_silence, ws, draft_root, video
 ):
     """대본의 단어 사이 틈으로 자른다. 세 문장 사이 0.8초 틈이 둘 있다."""
-    assert _run(ws, draft_root, video, ["--cut"]) == 0
+    assert _run(ws, draft_root, video, ["--cut", "--cut-by", "speech"]) == 0
     assert len(_timeline(draft_root)["tracks"][0]["segments"]) == 3
+
+
+def test_hybrid_is_the_default(stub_probe, stub_silence, ws, draft_root, video):
+    """음량으로 자를 자리를 정하고 경계를 단어 경계로 밀어낸다."""
+    assert _run(ws, draft_root, video, ["--cut"]) == 0
+    assert len(_timeline(draft_root)["tracks"][0]["segments"]) >= 2
 
 
 def test_cutting_by_speech_never_loses_a_word_from_the_subtitles(

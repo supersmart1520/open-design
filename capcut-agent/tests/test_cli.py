@@ -183,3 +183,49 @@ def test_a_leading_workspace_flag_is_kept_before_the_command():
 
 def test_empty_argv_stays_empty():
     assert cli.normalize_argv([]) == []
+
+
+# ------------------------------------------------- Claude Code 스킬 설치
+
+
+def test_the_skill_file_ships_with_the_package():
+    skill = Path(cli.__file__).resolve().parent.parent / "SKILL.md"
+    assert skill.is_file()
+    body = skill.read_text("utf-8")
+    assert body.startswith("---")
+    assert "name: capcut-agent" in body
+
+
+def test_the_skill_states_that_building_is_not_verifying():
+    """사람이 캡컷에서 재생해야 끝난다 — 스킬이 이걸 빠뜨리면 안 된다."""
+    skill = Path(cli.__file__).resolve().parent.parent / "SKILL.md"
+    body = skill.read_text("utf-8")
+    assert "빌드 성공은 검증이 아니다" in body
+
+
+def test_installing_the_skill_links_it(tmp_path):
+    args = cli.build_parser().parse_args(
+        ["install-skill", "--dest", str(tmp_path / "capcut-agent")]
+    )
+    assert cli.run_install_skill(args) == 0
+    installed = tmp_path / "capcut-agent" / "SKILL.md"
+    assert installed.is_file()
+    assert "capcut-agent" in installed.read_text("utf-8")
+
+
+def test_installing_twice_replaces_rather_than_failing(tmp_path):
+    dest = str(tmp_path / "capcut-agent")
+    for _ in range(2):
+        args = cli.build_parser().parse_args(["install-skill", "--dest", dest])
+        assert cli.run_install_skill(args) == 0
+
+
+def test_copy_mode_survives_the_source_moving(tmp_path):
+    dest = tmp_path / "capcut-agent"
+    args = cli.build_parser().parse_args(
+        ["install-skill", "--dest", str(dest), "--copy"]
+    )
+    cli.run_install_skill(args)
+    installed = dest / "SKILL.md"
+    assert not installed.is_symlink()
+    assert installed.read_text("utf-8").startswith("---")

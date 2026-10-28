@@ -41,7 +41,7 @@ class JobOptions(BaseModel):
     titleY: float = 1400.0
     title: str = ""
     anchor: str = "center"
-    cutBy: str = "speech"
+    cutBy: str = "hybrid"
     mediaMode: str = ""
     language: str = "ko"
 
