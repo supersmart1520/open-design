@@ -296,6 +296,10 @@ def test_mac_launcher_hunts_for_an_importable_arch():
     assert '"/usr/bin/arch -arm64" "/usr/bin/arch -x86_64" ""' in script
     # 어느 쪽도 안 되면 조용히 끝내지 않는다.
     assert "필요한 패키지를 읽지 못했습니다" in script
+    # 코드 0 으로 바로 끝나도 조용히 넘어가지 않는다 — 아이콘만 깜빡이고
+    # 사라지는 것처럼 보이는데, 지금까지는 아무 말도 하지 않았다.
+    assert "앱이 바로 종료되었습니다" in script
+    assert "ELAPSED -lt 5" in script
 
 
 def test_window_note_names_the_actual_python():

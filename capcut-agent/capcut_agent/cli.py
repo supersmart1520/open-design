@@ -1094,11 +1094,22 @@ $PY
   exit 1
 fi
 
+START=$(date +%s)
 $PYRUN "$PY" -m capcut_agent.cli app >>"$LOG" 2>&1
 STATUS=$?
+ELAPSED=$(( $(date +%s) - START ))
+echo "끝남: 코드 $STATUS, $ELAPSED 초" >>"$LOG"
 
 if [ $STATUS -ne 0 ]; then
   alert "실행에 실패했습니다 (코드 $STATUS)
+
+$(tail -n 10 "$LOG")
+
+기록: $LOG"
+elif [ $ELAPSED -lt 5 ]; then
+  # 성공 코드로 바로 끝났다. 아이콘만 깜빡이고 사라진 것처럼 보이는데,
+  # 코드가 0 이라 지금까지는 아무 말도 하지 않았다. 그 구멍을 막는다.
+  alert "앱이 바로 종료되었습니다 ($ELAPSED 초).
 
 $(tail -n 10 "$LOG")
 
