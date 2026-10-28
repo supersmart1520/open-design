@@ -6,6 +6,7 @@
 |---|---|---|
 | **A · 강의 하이라이트** | 긴 강의 영상 | 전사 → 대본 → 숏폼 후보 추천 → **사람이 승인** → 9:16 드래프트 + 자막 |
 | **B · AI 보이스** | 대본 + B롤 클립 | 대본 → ElevenLabs 나레이션 → B롤 깔기 → 9:16 드래프트 + 자막 |
+| **자막만** | 아무 영상 | 컷 없이 전체 영상 + 자막 트랙 (`caption`) |
 | (보조) **cut** | 토킹 영상 | 무음만 걷어낸 가로 점프컷 드래프트 |
 
 캡컷을 열면 컷·자막이 이미 잡힌 타임라인이 있고, 거기서부터는 사람이 손봅니다.
@@ -165,6 +166,37 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 
 ---
 
+### 자막만 달기 — `caption`
+
+컷을 하나도 하지 않고, 전체 영상에 자막 트랙만 얹습니다. **원본을 옮기지도 않습니다.**
+
+```bash
+python -m capcut_agent.cli caption 영상.mp4
+```
+
+```
+입력      : 영상.mp4
+해상도    : 1920x1080 @ 30.0fps
+길이      : 00:25.00
+  … 전사 캐시에서 꺼냄
+
+문장       : 4개 → 자막 4장
+대본      : ~/CapCutAgent/scripts/영상.대본.txt
+드래프트  : …/com.lveditor.draft/영상-자막-1028-042258
+```
+
+| 옵션 | 쓸 때 |
+|---|---|
+| `--shorts` | 9:16 세로로 크롭까지 (기본은 원본 비율 그대로) |
+| `--anchor top` | `--shorts` 일 때 인물이 아래쪽에 잡혀 있으면 |
+| `--max-chars 14` | 자막 한 줄을 더 짧게 |
+| `--subtitle-y -0.55` | 자막을 더 위로 (하단 UI가 가릴 때) |
+| `--srt` | SRT 도 같이 내보내기 |
+
+`shorts` / `build` 와 **전사 캐시를 공유**합니다. 같은 영상이면 전사를 다시 돌리지 않습니다.
+
+---
+
 ### 모드 B — AI 보이스로 숏폼 만들기
 
 아직 구현 중입니다. `broll/` 과 `voice/` 폴더는 미리 만들어져 있습니다.
@@ -219,6 +251,7 @@ python -m capcut_agent.cli 영상.mp4                  # 서브커맨드 생략 
 | 1.6단 | 미디어 경로 버그 수정 — 드래프트가 이동 후 경로를 가리키게 | **완료** |
 | 2단 | 숏폼 기반 — 9:16 프레이밍, 한국어 자막, 오디오 트랙 | **완료** |
 | 3단 | **모드 A** — 전사 → 대본 → 후보 추천 → 승인 → 숏폼 드래프트 | **완료 · 캡컷 재생 검증 대기** |
+| 3.5단 | **자막만** (`caption`) — 컷 없이 전체 영상 + 자막 | **완료 · 캡컷 재생 검증 대기** |
 | 4단 | **모드 B** — ElevenLabs 나레이션 + B롤 → 숏폼 드래프트 | 다음 |
 | 5단 | FastAPI + 정적 HTML 1장 (drag/drop + SSE stepper) | 예정 |
 | 6단 | 영상 프리뷰 + 보존 구간 사용자 마킹 (`[` / `]` 단축키) | 예정 |
@@ -242,8 +275,8 @@ capcut-agent/
 │   ├── transcribe.py   # 로컬 whisper + 내용 해시 캐시 + ASR 락
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
-│   └── cli.py          # check / cut / shorts / build
-└── tests/              # pytest 110개 — ffmpeg·whisper 없이도 도는 테스트
+│   └── cli.py          # check / cut / caption / shorts / build
+└── tests/              # pytest 127개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

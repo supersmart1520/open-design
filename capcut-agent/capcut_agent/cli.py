@@ -1,7 +1,8 @@
 """캡컷 에이전트 CLI.
 
     python3 -m capcut_agent.cli check               환경 + 저장소 점검
-    python3 -m capcut_agent.cli cut 영상.mp4         무음 컷 (1단, 가로 그대로)
+    python3 -m capcut_agent.cli cut 영상.mp4         무음 컷 (가로 그대로)
+    python3 -m capcut_agent.cli caption 영상.mp4     컷 없이 자막만
     python3 -m capcut_agent.cli shorts 강의.mp4      전사 → 숏폼 후보 추천
     python3 -m capcut_agent.cli build <shorts.json>  승인한 후보 → 숏폼 드래프트
 
@@ -29,12 +30,26 @@ from .silence import Range, SilenceOptions, keeps_from_silence
 from .subtitle import DEFAULT_MAX_CHARS, Word, cues_from_words, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
-SUBCOMMANDS = ("check", "cut", "shorts", "build")
+SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build")
 
 
 def _fmt(seconds: float) -> str:
     m, s = divmod(max(seconds, 0.0), 60)
     return f"{int(m):02d}:{s:05.2f}"
+
+
+def blocking_checks(report, args, needs_draft: bool = True) -> list:
+    """진행을 막아야 하는 점검 항목만 추린다.
+
+    드래프트 폴더 자동 탐색은 두 경우에 무관하다.
+      * --draft-dir 로 위치를 직접 줬을 때 (resolve_draft_root 가 검사한다)
+      * --dry-run 처럼 드래프트를 아예 쓰지 않을 때
+    """
+    skip_draft = (not needs_draft) or bool(getattr(args, "draft_dir", None))
+    return [
+        check for check in report.blockers
+        if not (skip_draft and check.name == DRAFT_CHECK_NAME)
+    ]
 
 
 # --------------------------------------------------------------------- parser
@@ -66,6 +81,25 @@ def build_parser() -> argparse.ArgumentParser:
         ("--min-gap", "이보다 가까운 조각끼리 붙인다, 초"),
     ):
         cut.add_argument(flag, type=float, help=f"{help_text} (생략하면 config.json)")
+
+    caption = subparsers.add_parser(
+        "caption", help="컷 없이 자막만 (전체 영상 + 자막 트랙)"
+    )
+    caption.add_argument("video", help="영상 mp4 / mov")
+    caption.add_argument("--name", help="드래프트 이름")
+    caption.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
+    caption.add_argument("--language", default="ko", help="전사 언어 (기본 ko)")
+    caption.add_argument("--model", default="", help="whisper 모델 (생략하면 트랙 기본값)")
+    caption.add_argument("--max-chars", type=int, default=DEFAULT_MAX_CHARS,
+                         help="자막 한 줄 글자 수")
+    caption.add_argument("--subtitle-y", type=float, default=-0.72,
+                         help="자막 세로 위치. 화면 중앙 0, 아래가 음수.")
+    caption.add_argument("--shorts", action="store_true",
+                         help="9:16 세로로 크롭한다 (기본은 원본 비율 그대로)")
+    caption.add_argument("--anchor", default="center",
+                         choices=("center", "left", "right", "top", "bottom"),
+                         help="--shorts 일 때 남길 쪽")
+    caption.add_argument("--srt", action="store_true", help="SRT 도 같이 내보낸다")
 
     shorts = subparsers.add_parser("shorts", help="전사 → 숏폼 후보 추천")
     shorts.add_argument("video", help="강의 영상 mp4 / mov")
@@ -205,10 +239,7 @@ def process_one(video, workspace, options, args, draft_root) -> int:
 
 def run_cut(args, workspace) -> int:
     report = run_checks(workspace)
-    blockers = [
-        c for c in report.blockers
-        if not (args.dry_run and c.name == DRAFT_CHECK_NAME)
-    ]
+    blockers = blocking_checks(report, args, needs_draft=not args.dry_run)
     if blockers:
         print(format_report(report), file=sys.stderr)
         return 1
@@ -246,14 +277,103 @@ def run_cut(args, workspace) -> int:
     return 1 if failures else 0
 
 
+# ------------------------------------------------------------------- caption
+
+
+def run_caption(args, workspace) -> int:
+    """컷 없이 자막만. 원본을 건드리지 않는다 — 옮기지도, 자르지도 않는다."""
+    report = run_checks(workspace)
+    if blocking_checks(report, args):
+        print(format_report(report), file=sys.stderr)
+        return 1
+
+    media = probe(args.video)
+    print(f"입력      : {media.path.name}")
+    print(f"해상도    : {media.width}x{media.height} @ {media.fps}fps")
+    print(f"길이      : {_fmt(media.duration)}")
+    if not media.has_audio:
+        print("오디오가 없어 자막을 만들 수 없습니다.", file=sys.stderr)
+        return 1
+
+    backend = pick_backend(platform.system(), platform.machine())
+    try:
+        transcript = transcribe(
+            media.path, workspace.asr_cache, backend,
+            model=args.model, language=args.language,
+            on_progress=lambda message: print(f"  … {message}"),
+        )
+    except BackendMissing as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        return 1
+
+    if not transcript.segments:
+        print("전사 결과가 비었습니다. 오디오를 확인해 주세요.", file=sys.stderr)
+        return 1
+
+    # 컷이 없으므로 소스 시간이 그대로 타임라인 시간이다.
+    words = transcript.words or [
+        Word(s.text, s.start, s.end) for s in transcript.segments
+    ]
+    cues = cues_from_words(words, max_chars=args.max_chars)
+    if not cues:
+        print("자막으로 만들 말이 없습니다.", file=sys.stderr)
+        return 1
+
+    name = args.name or f"{media.path.stem}-자막-{datetime.now():%m%d-%H%M%S}"
+    builder = DraftBuilder(
+        media=media, name=name,
+        canvas=SHORTS if args.shorts else None,
+        crop_anchor=args.anchor,
+    )
+    builder.add_clip(media, 0.0, media.duration)
+    builder.add_subtitles(cues, SubtitleStyle(transform_y=args.subtitle_y))
+    folder = builder.write(resolve_draft_root(args.draft_dir))
+
+    script_path = workspace.scripts / f"{media.path.stem}.대본.txt"
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(transcript.script(), encoding="utf-8")
+
+    print()
+    print(f"문장       : {len(transcript.segments)}개 → 자막 {len(cues)}장")
+    print(f"대본      : {script_path}")
+    print(f"드래프트  : {folder}")
+
+    if args.srt:
+        srt_path = workspace.scripts / f"{name}.srt"
+        srt_path.write_text(to_srt(cues), encoding="utf-8")
+        print(f"SRT       : {srt_path}")
+
+    storage.write_report(workspace, name, {
+        "모드": "caption",
+        "생성시각": datetime.now().isoformat(timespec="seconds"),
+        "원본": {
+            "경로": str(media.path),
+            "해상도": f"{media.width}x{media.height}",
+            "길이초": round(media.duration, 3),
+        },
+        "전사": {
+            "언어": transcript.language, "모델": transcript.model,
+            "문장수": len(transcript.segments), "단어수": len(transcript.words),
+        },
+        "자막": {
+            "장수": len(cues), "한줄글자수": args.max_chars,
+            "세로위치": args.subtitle_y,
+        },
+        "캔버스": f"{SHORTS.width}x{SHORTS.height}" if args.shorts
+                 else f"{media.width}x{media.height}",
+        "드래프트": str(folder),
+    })
+    _print_verify_steps()
+    return 0
+
+
 # -------------------------------------------------------- shorts (모드 A 1단계)
 
 
 def run_shorts(args, workspace) -> int:
     report = run_checks(workspace)
     # 드래프트를 아직 쓰지 않으므로 캡컷이 없어도 된다.
-    blockers = [c for c in report.blockers if c.name != DRAFT_CHECK_NAME]
-    if blockers:
+    if blocking_checks(report, args, needs_draft=False):
         print(format_report(report), file=sys.stderr)
         return 1
 
@@ -345,7 +465,7 @@ def _window_cues(transcript: Transcript, start: float, end: float, max_chars: in
 
 def run_build(args, workspace) -> int:
     report = run_checks(workspace)
-    if report.blockers:
+    if blocking_checks(report, args):
         print(format_report(report), file=sys.stderr)
         return 1
 
@@ -453,6 +573,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if report.ok else 1
     if args.command == "cut":
         return run_cut(args, workspace)
+    if args.command == "caption":
+        return run_caption(args, workspace)
     if args.command == "shorts":
         return run_shorts(args, workspace)
     if args.command == "build":
