@@ -252,3 +252,35 @@ def test_reveal_reports_failure_instead_of_pretending(client, monkeypatch):
 
     assert response.status_code == 500
     assert "파일 관리자가 없습니다" in response.json()["detail"]
+
+
+# --- API 키 -------------------------------------------------------------------
+#
+# 저장한 키를 다시 내보내면, 대시보드를 여는 누구나 키를 가져갈 수 있다.
+
+
+def test_key_is_saved_and_only_shown_masked(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+
+    saved = client.post("/api/settings/key", json={"key": key})
+    assert saved.status_code == 200
+    assert key not in saved.text
+
+    from capcut_agent.llm import load_key
+    assert load_key(client.workspace) == key
+
+    shown = client.get("/api/status").json()["apiKey"]
+    assert key not in shown
+    assert shown.startswith("sk-ant-")
+
+
+def test_status_says_when_there_is_no_key(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert client.get("/api/status").json()["apiKey"] == ""
+
+
+def test_key_can_be_cleared(client, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    client.post("/api/settings/key", json={"key": "sk-ant-xxxxxxxxxxxxxxx"})
+    assert client.post("/api/settings/key", json={"key": ""}).json()["apiKey"] == ""

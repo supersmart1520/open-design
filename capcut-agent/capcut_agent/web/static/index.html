@@ -124,6 +124,15 @@
     <code id="inbox">…</code>
     <button id="open">폴더 열기</button>
   </div>
+  <div class="bar" style="margin-top:10px">
+    <label>클로드 API 키
+      <input type="password" id="key" placeholder="sk-ant-…" autocomplete="off">
+    </label>
+    <button id="saveKey">저장</button>
+    <span class="meta" id="keyState">…</span>
+  </div>
+  <div class="hint">키를 넣으면 클로드가 대본을 읽고 숏폼 구간을 고릅니다.
+    없으면 낱말·자리 규칙으로 고릅니다.</div>
 
   <hr>
   <div id="jobs"><div class="empty">작업이 없습니다. inbox 에 영상을 넣고 훑어 보세요.</div></div>
@@ -208,6 +217,28 @@ async function api(path, options) {
   return response.json();
 }
 
+$("saveKey").onclick = async (event) => {
+  event.target.disabled = true;
+  try {
+    const result = await api("/api/settings/key", {
+      method: "POST", body: JSON.stringify({ key: $("key").value }),
+    });
+    // 저장한 키를 다시 화면에 꺼내 두지 않는다.
+    $("key").value = "";
+    showKey(result.apiKey);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    event.target.disabled = false;
+  }
+};
+
+function showKey(value) {
+  $("keyState").textContent = value
+    ? `${value} — 클로드가 대본을 읽습니다`
+    : "없음 — 규칙으로 고릅니다";
+}
+
 $("open").onclick = async (event) => {
   // 영상을 넣을 폴더다. 경로를 손으로 복사하게 두지 않는다.
   event.target.disabled = true;
@@ -239,6 +270,7 @@ async function refresh() {
   ]);
   $("track").textContent = `${status.trackLabel} · ASR ${status.asr}`;
   $("inbox").textContent = status.workspace.inbox;
+  showKey(status.apiKey);
   $("live").className = status.workerRunning ? "dot on" : "dot bad";
   $("watch").textContent = status.watcherRunning
     ? "inbox 자동 감지 켜짐" : "자동 감지 꺼짐";

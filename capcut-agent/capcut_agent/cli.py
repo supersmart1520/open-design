@@ -185,6 +185,10 @@ def build_parser() -> argparse.ArgumentParser:
     shorts.add_argument("--min-seconds", type=float, default=18.0, help="후보 최소 길이")
     shorts.add_argument("--max-seconds", type=float, default=60.0, help="후보 최대 길이")
     shorts.add_argument("--limit", type=int, default=8, help="추천 개수")
+    shorts.add_argument("--local-only", action="store_true",
+                        help="모델을 쓰지 않고 규칙 기반으로만 고릅니다")
+    shorts.add_argument("--llm-model", default="",
+                        help="대본을 읽을 모델 (기본: 가장 좋은 모델)")
     shorts.add_argument("--auto", type=int, metavar="N",
                         help="승인 없이 점수 상위 N개를 바로 드래프트로 만든다. "
                              "한 영상에서 뽑을 숏폼 개수.")
@@ -761,6 +765,57 @@ def _warn_offscreen(label: str, y_px: float, canvas_height: int) -> None:
 # -------------------------------------------------------- shorts (모드 A 1단계)
 
 
+#: 기승전결 네 단계. 표시 순서를 코드 여기저기서 다시 정하지 않는다.
+ARC_STAGES = ("기", "승", "전", "결")
+
+
+def format_arc(arc: dict) -> str:
+    """왜 이 구간을 가져왔는지 한 줄로. 없는 단계는 가운뎃점으로 비워 둔다."""
+    if not arc:
+        return "기승전결: 찾지 못함"
+    marks = "".join(stage if stage in arc else "·" for stage in ARC_STAGES)
+    return f"기승전결 {marks}  " + " / ".join(
+        f"{stage}: {_clip(arc[stage])}" for stage in ARC_STAGES if stage in arc
+    )
+
+
+def _clip(text: str, width: int = 22) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def choose_candidates(args, workspace, transcript):
+    """숏폼 후보와 **어떻게 골랐는지**.
+
+    대본을 읽고 고르는 쪽이 낫다. 규칙 기반은 낱말과 자리를 맞힐 뿐이다.
+    다만 키가 없거나 인터넷이 끊겨 있을 수 있으므로, 그때는 규칙 기반으로
+    떨어지고 그 사실을 **감추지 않는다** — 고른 방식이 다르면 결과도 다르다.
+    """
+    from . import llm
+
+    model = getattr(args, "llm_model", "") or llm.DEFAULT_MODEL
+    if not getattr(args, "local_only", False):
+        key = llm.load_key(workspace)
+        if key:
+            try:
+                print(f"  … 클로드가 대본을 읽는 중 ({model})")
+                picked = llm.select(transcript, args.limit, key, model=model)
+                return picked, f"클로드가 대본을 읽고 선정 ({model})"
+            except llm.LLMUnavailable as exc:
+                print(f"  … 모델을 쓰지 못했습니다 — {exc}", file=sys.stderr)
+                print("  … 규칙 기반으로 고릅니다.", file=sys.stderr)
+        else:
+            print("  … API 키가 없어 규칙 기반으로 고릅니다.")
+
+    picked = propose(
+        transcript,
+        min_seconds=args.min_seconds,
+        max_seconds=args.max_seconds,
+        limit=args.limit,
+    )
+    return picked, "규칙 기반 (낱말·자리)"
+
+
 def run_shorts(args, workspace) -> int:
     report = run_checks(workspace)
     # 드래프트를 아직 쓰지 않으므로 캡컷이 없어도 된다.
@@ -800,12 +855,7 @@ def run_shorts(args, workspace) -> int:
         json.dumps(transcript.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
     )
 
-    candidates = propose(
-        transcript,
-        min_seconds=args.min_seconds,
-        max_seconds=args.max_seconds,
-        limit=args.limit,
-    )
+    candidates, picked_by = choose_candidates(args, workspace, transcript)
     plan_path = save_candidates(
         workspace.scripts / f"{stem}.shorts.json", media.path, transcript, candidates
     )
@@ -820,10 +870,13 @@ def run_shorts(args, workspace) -> int:
         print("추천할 후보가 없습니다. --min-seconds 를 낮춰 보세요.")
         return 0
 
+    print(f"고른 방식   : {picked_by}")
+    print()
     for candidate in candidates:
         print(f"  #{candidate.index}  {_fmt(candidate.start)} → {_fmt(candidate.end)}  "
               f"({candidate.duration:4.1f}s)  점수 {candidate.score:4.1f}")
         print(f"      {candidate.title}")
+        print(f"      {format_arc(candidate.arc)}")
         for reason in candidate.reasons[:3]:
             print(f"      · {reason}")
     if args.auto:

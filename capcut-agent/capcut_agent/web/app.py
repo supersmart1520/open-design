@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from .. import storage
 from ..env_check import format_report, run_checks
+from ..llm import load_key, masked, save_key
 from ..reveal import reveal
 from .events import EventBroker, sse
 from .jobs import MANUAL_GATES, STATUS_LABELS, JobStore, TransitionError
@@ -49,6 +50,12 @@ class JobOptions(BaseModel):
     language: str = "ko"
     #: 한 영상에서 뽑을 숏폼 개수. 0 이면 통째로 자막만 단다.
     shortsCount: int = 0
+
+
+class KeyIn(BaseModel):
+    """클로드 API 키 한 줄. 빈 문자열이면 지운다는 뜻."""
+
+    key: str = ""
 
 
 class ScanRequest(BaseModel):
@@ -112,12 +119,22 @@ def create_app(workspace_path: str | Path | None = None,
                 "inbox": str(workspace.inbox),
                 "scripts": str(workspace.scripts),
             },
+            "apiKey": masked(load_key(workspace)),
             "counts": store.counts(),
             "labels": STATUS_LABELS,
             "manualGates": sorted(MANUAL_GATES),
             "workerRunning": worker.running,
             "watcherRunning": watcher.running,
         }
+
+    @app.post("/api/settings/key")
+    def set_key(body: KeyIn) -> dict:
+        """클로드 API 키. 저장소 안에 주인만 읽을 수 있게 둔다.
+
+        가려진 형태만 돌려준다. 저장한 키를 다시 내보내지 않는다.
+        """
+        save_key(workspace, body.key)
+        return {"apiKey": masked(load_key(workspace))}
 
     @app.post("/api/reveal/{name}")
     def reveal_folder(name: str) -> dict:
