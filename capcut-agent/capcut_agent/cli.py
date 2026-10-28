@@ -607,7 +607,11 @@ def caption_one(video: Path, workspace, args) -> int:
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(transcript.script(), encoding="utf-8")
 
+    post_path = write_post_text(workspace, media.path.stem, transcript)
+
     print()
+    if post_path:
+        print(f"게시문구  : {post_path}")
     print(f"캔버스    : {builder.canvas.width}x{builder.canvas.height}")
     print(f"문장       : {len(transcript.segments)}개 → 자막 {len(cues)}장 "
           f"(한 줄 {max_chars}자, 모션 {args.motion})")
@@ -691,6 +695,7 @@ def caption_one(video: Path, workspace, args) -> int:
         "드래프트": str(folder),
         "대본파일": str(script_path),
         "미리보기": str(preview_path) if preview_path else None,
+        "게시문구": str(post_path) if post_path else None,
     }
     storage.write_report(workspace, name, report)
     if getattr(args, "json", False):
@@ -789,6 +794,28 @@ def format_arc(arc: dict) -> str:
 def _clip(text: str, width: int = 22) -> str:
     text = " ".join(str(text).split())
     return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def write_post_text(workspace, name: str, transcript):
+    """게시문구를 만들어 저장한다. 못 만들면 `None` — 편집은 계속된다.
+
+    올리는 건 사람이 한다. 여기서는 복사해 붙일 글만 만든다.
+    """
+    from . import llm
+
+    key = llm.load_key(workspace)
+    if not key:
+        return None
+    try:
+        post = llm.post_text(transcript, key)
+    except llm.LLMUnavailable as exc:
+        print(f"  … 게시문구를 만들지 못했습니다 — {exc}", file=sys.stderr)
+        return None
+
+    path = workspace.scripts / f"{name}.게시문구.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(llm.format_post(post), encoding="utf-8")
+    return path
 
 
 def choose_candidates(args, workspace, transcript):

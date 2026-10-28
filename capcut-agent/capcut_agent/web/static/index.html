@@ -222,6 +222,8 @@ function render() {
     const acts = [];
     if (job.status === "review")
       acts.push(`<button class="go" data-act="approve" data-id="${job.id}">검수 완료</button>`);
+    if (job.summary && job.summary.post)
+      acts.push(`<button data-act="copy" data-id="${job.id}">게시문구 복사</button>`);
     if (["approved", "uploaded"].includes(job.status))
       acts.push(`<button data-act="reopen" data-id="${job.id}">재검수</button>`);
       acts.push(`<button class="go" data-act="send" data-id="${job.id}">드라이브로 보내기</button>`);
@@ -405,6 +407,24 @@ $("jobs").onclick = async (event) => {
   const { act, id } = button.dataset;
   button.disabled = true;
   try {
+    if (act === "copy") {
+      // 올리는 건 사람이 한다. 여기서는 붙여 쓸 글만 넘긴다.
+      const detail = await api(`/api/jobs/${id}`);
+      const text = detail.postText || "";
+      if (!text) {
+        alert("게시문구가 아직 없습니다.");
+      } else {
+        try {
+          await navigator.clipboard.writeText(text);
+          button.textContent = "복사됨";
+        } catch (error) {
+          // 클립보드를 막는 브라우저가 있다. 그때는 눈으로 보고 긁어 간다.
+          window.prompt("복사해 쓰세요", text);
+        }
+      }
+      button.disabled = false;
+      return;
+    }
     if (act === "remove") {
       await api(`/api/jobs/${id}`, { method: "DELETE" });
       jobs.delete(id);

@@ -214,3 +214,56 @@ def test_arc_is_shown_with_missing_stages_visible():
     # 어느 단계가 없는지가 보여야 한다. 빠진 걸 숨기면 판단을 못 한다.
     assert "기··결" in format_arc({"기": "ㄱ", "결": "ㄹ"})
     assert format_arc({}) == "기승전결: 찾지 못함"
+
+
+# --- 게시문구 -----------------------------------------------------------------
+
+
+def test_post_text_normalises_hashtags(monkeypatch):
+    monkeypatch.setattr(llm, "ask", lambda *a, **kw: json.dumps({
+        "제목": "자막이 밀리는 이유",
+        "설명": "두 문장짜리 설명입니다.",
+        "해시태그": ["영상편집", "#캡컷", " 자막 "],
+    }, ensure_ascii=False))
+
+    post = llm.post_text(_script(), "sk-ant-x")
+
+    assert post["해시태그"] == ["#영상편집", "#캡컷", "#자막"]
+    assert post["제목"] == "자막이 밀리는 이유"
+
+
+def test_post_text_needs_a_key(monkeypatch):
+    monkeypatch.setattr(llm, "ask", lambda *a, **kw: pytest.fail("불리면 안 됩니다"))
+    with pytest.raises(llm.LLMUnavailable, match="API 키가 없습니다"):
+        llm.post_text(_script(), "")
+
+
+def test_formatted_post_is_ready_to_paste():
+    text = llm.format_post({
+        "제목": "제목", "설명": "설명입니다.", "해시태그": ["#가", "#나"],
+    })
+    assert text.splitlines()[0] == "제목"
+    assert text.rstrip().endswith("#가 #나")
+
+
+def test_transcript_is_data_in_the_post_prompt():
+    assert "자료" in llm.POST_INSTRUCTIONS
+    # 없는 수치를 지어내면 그대로 올라간다.
+    assert "지어내지" in llm.POST_INSTRUCTIONS
+
+
+def test_failure_to_write_post_text_does_not_stop_editing(tmp_path, monkeypatch, capsys):
+    from capcut_agent import storage
+    from capcut_agent.cli import write_post_text
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    workspace = storage.resolve_workspace(tmp_path / "ws")
+    llm.save_key(workspace, "sk-ant-x")
+
+    def refuse(*a, **kw):
+        raise llm.LLMUnavailable("끊겼습니다")
+
+    monkeypatch.setattr(llm, "post_text", refuse)
+
+    assert write_post_text(workspace, "영상", _script()) is None
+    assert "게시문구를 만들지 못했습니다" in capsys.readouterr().err

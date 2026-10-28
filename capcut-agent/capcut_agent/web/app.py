@@ -250,9 +250,13 @@ def create_app(workspace_path: str | Path | None = None,
         if job is None:
             raise HTTPException(404, "그런 작업이 없습니다")
         payload = job.to_dict()
-        script = (job.result.get("summary") or {}).get("script")
+        summary = job.result.get("summary") or {}
+        script = summary.get("script")
         if script and Path(script).is_file():
             payload["scriptText"] = Path(script).read_text(encoding="utf-8")
+        post = summary.get("post")
+        if post and Path(post).is_file():
+            payload["postText"] = Path(post).read_text(encoding="utf-8")
         return payload
 
     @app.post("/api/scan")

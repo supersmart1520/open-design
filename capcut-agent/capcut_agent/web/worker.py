@@ -98,6 +98,7 @@ def summarize(report: dict) -> dict:
     return {
         "draft": report.get("드래프트"),
         "script": report.get("대본파일"),
+        "post": report.get("게시문구"),
         "canvas": report.get("캔버스"),
         "durationSec": source.get("길이초"),
         "resolution": source.get("해상도"),
