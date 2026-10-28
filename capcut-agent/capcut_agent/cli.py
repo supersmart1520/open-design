@@ -24,6 +24,8 @@ from pathlib import Path
 
 from . import storage
 from .draft import (
+    DEFAULT_TITLE_LAYOUT,
+    TITLE_LAYOUTS,
     SPEECH_Y_PX,
     TITLE_FONT_SIZE,
     TITLE_SECONDS,
@@ -147,7 +149,10 @@ def build_parser() -> argparse.ArgumentParser:
     caption.add_argument("--title",
                          help="제목 자막 문구. **주지 않으면 제목을 넣지 않는다.** "
                               "두 줄은 공백 또는 줄바꿈으로 가른다.")
-    caption.add_argument("--title-y", type=float, default=TITLE_Y_PX,
+    caption.add_argument("--title-layout", choices=sorted(TITLE_LAYOUTS),
+                         default=DEFAULT_TITLE_LAYOUT,
+                         help="제목 배치 (중앙=화면을 채움, 상단=얼굴 위 두 줄)")
+    caption.add_argument("--title-y", type=float, default=None,
                          help="제목 세로 위치 (캔버스 픽셀, 중앙 0)")
     caption.add_argument("--no-title", action="store_true", help="제목 자막 없이")
     caption.add_argument("--title-max-chars", type=int, default=TITLE_MAX_CHARS,
@@ -160,7 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
                          help="제목 가로 위치 (캔버스 픽셀, 중앙 0)")
     caption.add_argument("--title-seconds", type=float, default=TITLE_SECONDS,
                          help="제목이 떠 있는 시간, 초 (기본 %(default)s)")
-    caption.add_argument("--title-font-size", type=float, default=TITLE_FONT_SIZE,
+    caption.add_argument("--title-font-size", type=float, default=None,
                          help="제목 글자 크기 (기본 %(default)s). 말하는 자막보다 "
                               "훨씬 커야 썸네일에서 손가락이 멈춥니다.")
     caption.add_argument("--media-mode",
@@ -408,6 +413,7 @@ def run_cut(args, workspace) -> int:
 
 
 def run_caption(args, workspace) -> int:
+    resolve_title_layout(args)
     """컷 없이 자막만. 여러 개면 하나씩 돌린다."""
     report = run_checks(workspace)
     if blocking_checks(report, args):
@@ -443,6 +449,7 @@ def run_caption(args, workspace) -> int:
 
 
 def caption_one(video: Path, workspace, args) -> int:
+    resolve_title_layout(args)
     """영상 하나에 자막을 얹는다. --cut 을 주면 무음도 같이 잘라낸다."""
     media = probe(video)
     shape = f"{media.width}x{media.height}"
@@ -1379,10 +1386,26 @@ def _print_verify_steps() -> None:
 # ----------------------------------------------------------------------- main
 
 
+def resolve_title_layout(args) -> None:
+    """제목 배치를 위치·크기로 푼다. 직접 준 값이 있으면 그게 이긴다.
+
+    배치는 묶음일 뿐이고 최종 권한은 사람에게 있다. `--title-layout 상단`
+    을 고르고도 `--title-y` 를 따로 주면 그 값을 쓴다.
+    """
+    layout = TITLE_LAYOUTS.get(getattr(args, "title_layout", "") or "")
+    if layout is None:
+        return
+    if getattr(args, "title_y", None) is None:
+        args.title_y = layout["y_px"]
+    if getattr(args, "title_font_size", None) is None:
+        args.title_font_size = layout["font_size"]
+
+
 def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(normalize_argv(raw))
+    resolve_title_layout(args)
     workspace = storage.resolve_workspace(args.workspace)
 
     if args.command == "doctor":

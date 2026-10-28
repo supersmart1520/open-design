@@ -113,9 +113,28 @@
 
   <hr>
   <div class="bar">
+    <label>제작 방식
+      <select id="mode">
+        <option value="lecture">강의 숏폼 — 원본 소리 그대로</option>
+        <option value="voice" disabled>AI 보이스 — 준비 중</option>
+      </select>
+    </label>
     <label>숏폼 개수
       <input type="number" id="count" min="0" max="20" step="1" value="0">
     </label>
+    <label>제목 배치
+      <select id="titleLayout">
+        <option value="중앙">중앙 — 화면을 채움</option>
+        <option value="상단">상단 — 얼굴 위 두 줄</option>
+      </select>
+    </label>
+    <label>제목 색
+      <select id="titlePalette">
+        <option value="green">초록 + 검정</option>
+        <option value="red">빨강 + 검정</option>
+      </select>
+    </label>
+    <span class="meta">9:16</span>
     <button class="go" id="scan">지금 훑기</button>
     <span class="meta" id="watch">…</span>
   </div>
@@ -299,7 +318,11 @@ $("scan").onclick = async (event) => {
     const result = await api("/api/scan", {
       method: "POST",
       body: JSON.stringify({
-        options: { shortsCount: Number($("count").value) || 0 },
+        options: {
+          shortsCount: Number($("count").value) || 0,
+          titleLayout: $("titleLayout").value,
+          titlePalette: $("titlePalette").value,
+        },
       }),
     });
     if (!result.added) alert(`새 영상이 없습니다 (inbox ${result.found}개)`);

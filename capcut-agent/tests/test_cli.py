@@ -359,3 +359,75 @@ def test_shipped_icns_has_the_sizes_macos_looks_for():
     # 독·파인더·전환창이 각각 다른 크기를 집어간다.
     for needed in (b"ic11", b"ic07", b"ic08", b"ic09", b"ic10"):
         assert needed in kinds, f"{needed} 가 없습니다"
+
+
+# --- 제목 배치 ----------------------------------------------------------------
+#
+# 숏폼 썸네일에서 실제로 쓰는 두 꼴. 중앙은 글자가 화면을 채우고, 상단은
+# 얼굴 위에 두 줄로 얹는다 — 인물을 가리지 않게.
+
+
+def _caption_args(*extra):
+    from capcut_agent.cli import build_parser, resolve_title_layout
+
+    args = build_parser().parse_args(["caption", "x.mp4", *extra])
+    resolve_title_layout(args)
+    return args
+
+
+def test_center_is_the_default_layout():
+    args = _caption_args()
+    assert args.title_layout == "중앙"
+    assert args.title_y == 0
+
+
+def test_top_layout_sits_above_centre_and_is_smaller():
+    # 얼굴 위라 중앙과 같은 크기로 두면 인물을 덮는다.
+    center, top = _caption_args(), _caption_args("--title-layout", "상단")
+    assert top.title_y > center.title_y
+    assert top.title_font_size < center.title_font_size
+
+
+def test_explicit_values_beat_the_layout():
+    # 배치는 묶음일 뿐이고 최종 권한은 사람에게 있다.
+    args = _caption_args("--title-layout", "상단", "--title-y", "1200",
+                         "--title-font-size", "40")
+    assert args.title_y == 1200.0
+    assert args.title_font_size == 40.0
+
+
+def test_layout_never_leaves_none_for_the_drawing_code():
+    for layout in ("중앙", "상단"):
+        args = _caption_args("--title-layout", layout)
+        assert args.title_y is not None
+        assert args.title_font_size is not None
+
+
+def test_dashboard_passes_title_design_through():
+    import pathlib
+    import types
+
+    from capcut_agent.web.worker import build_command
+
+    job = types.SimpleNamespace(
+        source="/v.mp4",
+        options={"shortsCount": 0, "titleLayout": "상단", "titlePalette": "red"},
+    )
+    command = build_command(job, pathlib.Path("/ws"))
+    assert "--title-layout" in command and "상단" in command
+    assert "--title-palette" in command and "red" in command
+
+
+def test_layout_is_resolved_without_going_through_main():
+    """진입점마다 푸는 걸 잊으면 그리는 쪽이 None 을 받는다."""
+    from capcut_agent.cli import build_parser, resolve_title_layout
+
+    args = build_parser().parse_args(["caption", "x.mp4", "--title-layout", "상단"])
+    assert args.title_y is None, "파서는 배치를 풀지 않는다"
+
+    resolve_title_layout(args)
+    assert args.title_y == 670
+
+    # 두 번 불러도 값이 흔들리면 안 된다.
+    resolve_title_layout(args)
+    assert args.title_y == 670

@@ -64,7 +64,8 @@ def build_command(job, workspace: Path, draft_dir: str | None = None) -> list[st
         pairs = (
             ("--motion", "motion"), ("--font-size", "fontSize"),
             ("--speech-y", "speechY"), ("--title-y", "titleY"),
-            ("--title", "title"), ("--anchor", "anchor"),
+            ("--title", "title"), ("--title-layout", "titleLayout"),
+            ("--title-palette", "titlePalette"), ("--anchor", "anchor"),
             ("--cut-by", "cutBy"), ("--media-mode", "mediaMode"),
             ("--language", "language"),
         )
