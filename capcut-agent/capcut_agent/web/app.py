@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import queue
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 
 from .. import storage
 from ..env_check import format_report, run_checks
+from ..reveal import reveal
 from .events import EventBroker, sse
 from .jobs import MANUAL_GATES, STATUS_LABELS, JobStore, TransitionError
 from .watcher import InboxWatcher
@@ -116,6 +118,27 @@ def create_app(workspace_path: str | Path | None = None,
             "workerRunning": worker.running,
             "watcherRunning": watcher.running,
         }
+
+    @app.post("/api/reveal/{name}")
+    def reveal_folder(name: str) -> dict:
+        """작업 폴더를 파일 관리자로 연다.
+
+        경로가 아니라 **이름**을 받는다. 어떤 경로인지는 서버가 정한다 —
+        임의 경로를 여는 구멍을 만들지 않기 위해서다.
+        """
+        folders = {
+            "home": workspace.home,
+            "inbox": workspace.inbox,
+            "scripts": workspace.scripts,
+        }
+        target = folders.get(name)
+        if target is None:
+            raise HTTPException(404, "그런 폴더가 없습니다")
+        try:
+            reveal(target)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            raise HTTPException(500, f"폴더를 열지 못했습니다: {exc}")
+        return {"opened": str(target)}
 
     @app.get("/api/jobs")
     def list_jobs(status: str | None = None) -> dict:

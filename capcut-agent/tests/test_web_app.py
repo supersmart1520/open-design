@@ -213,3 +213,42 @@ def test_captioning_flags_do_not_leak_into_the_shorts_path():
     )
     for flag in ("--cut", "--title", "--cut-by", "--media-mode"):
         assert flag not in command
+
+
+# --- 폴더 열기 ---------------------------------------------------------------
+#
+# 영상을 넣을 폴더를 버튼으로 연다. 경로가 아니라 **이름**을 받는다는 점이
+# 핵심이다 — 임의 경로를 여는 구멍이 되면 안 된다.
+
+
+def test_reveal_opens_the_inbox(client, monkeypatch):
+    opened: list[Path] = []
+    monkeypatch.setattr("capcut_agent.web.app.reveal", lambda path: opened.append(path))
+
+    response = client.post("/api/reveal/inbox")
+
+    assert response.status_code == 200
+    assert opened == [client.workspace.inbox]
+    assert response.json()["opened"] == str(client.workspace.inbox)
+
+
+def test_reveal_knows_only_its_own_folders(client, monkeypatch):
+    monkeypatch.setattr(
+        "capcut_agent.web.app.reveal",
+        lambda path: pytest.fail(f"열려서는 안 되는 경로: {path}"),
+    )
+
+    for name in ("..", "etc", "/etc/passwd", "home/../../etc"):
+        assert client.post(f"/api/reveal/{name}").status_code == 404
+
+
+def test_reveal_reports_failure_instead_of_pretending(client, monkeypatch):
+    def refuse(path):
+        raise RuntimeError("파일 관리자가 없습니다")
+
+    monkeypatch.setattr("capcut_agent.web.app.reveal", refuse)
+
+    response = client.post("/api/reveal/inbox")
+
+    assert response.status_code == 500
+    assert "파일 관리자가 없습니다" in response.json()["detail"]

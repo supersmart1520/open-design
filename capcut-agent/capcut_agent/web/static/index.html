@@ -122,6 +122,7 @@
   <div class="hint" id="countHint"></div>
   <div class="bar" style="margin-top:10px">
     <code id="inbox">…</code>
+    <button id="open">폴더 열기</button>
   </div>
 
   <hr>
@@ -206,6 +207,18 @@ async function api(path, options) {
   }
   return response.json();
 }
+
+$("open").onclick = async (event) => {
+  // 영상을 넣을 폴더다. 경로를 손으로 복사하게 두지 않는다.
+  event.target.disabled = true;
+  try {
+    await api("/api/reveal/inbox", { method: "POST" });
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    event.target.disabled = false;
+  }
+};
 
 function describeCount() {
   const n = Number($("count").value) || 0;
