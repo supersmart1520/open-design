@@ -12,9 +12,12 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import platform
+import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from datetime import datetime
@@ -1010,6 +1013,66 @@ _PLIST = """<?xml version="1.0" encoding="UTF-8"?>
 """
 
 
+#: 앱이 남기는 기록. .app 안에서는 터미널 출력이 아무 데도 안 보인다.
+APP_LOG = "~/CapCutAgent/app.log"
+
+
+def _mac_launcher(package_dir: Path, python: str) -> str:
+    """더블클릭했을 때 실행되는 스크립트.
+
+    `.app` 으로 실행하면 stdout/stderr 가 어디에도 보이지 않는다. 그래서
+    실패하면 **아무 일도 일어나지 않은 것처럼** 보인다. 기록을 파일로 남기고,
+    실패하면 네이티브 창으로 알린다.
+
+    알림 문구는 osascript 에 **인자로** 넘긴다. 문자열에 끼워 넣으면 따옴표나
+    줄바꿈이 섞이는 순간 스크립트가 깨진다 — 오류를 알리려다 오류가 난다.
+    """
+    return f"""#!/bin/bash
+APPDIR={shlex.quote(str(package_dir))}
+PY={shlex.quote(python)}
+LOG="$HOME/CapCutAgent/app.log"
+mkdir -p "$(dirname "$LOG")"
+
+alert() {{
+  /usr/bin/osascript -e 'on run argv' -e 'display alert "캡컷 에이전트" message (item 1 of argv) as critical' -e 'end run' -- "$1" >/dev/null 2>&1
+}}
+
+if [ ! -d "$APPDIR" ]; then
+  alert "설치된 폴더를 찾지 못했습니다.
+
+$APPDIR
+
+저장소를 옮기셨다면 install-app 을 다시 실행하세요."
+  exit 1
+fi
+
+cd "$APPDIR" || exit 1
+{{ echo; echo "=== $(date) ==="; }} >>"$LOG"
+"$PY" -m capcut_agent.cli app >>"$LOG" 2>&1
+STATUS=$?
+
+if [ $STATUS -ne 0 ]; then
+  alert "실행에 실패했습니다 (코드 $STATUS)
+
+$(tail -n 10 "$LOG")
+
+기록: $LOG"
+fi
+exit $STATUS
+"""
+
+
+def _clear_quarantine(path: Path) -> None:
+    """서명이 없는 번들은 격리 속성 때문에 macOS 가 막는다. 직접 만든 것이니 뗀다."""
+    try:
+        subprocess.run(
+            ["xattr", "-dr", "com.apple.quarantine", str(path)],
+            capture_output=True, timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def run_install_app(args) -> int:
     """더블클릭으로 실행되는 아이콘을 만든다.
 
@@ -1033,13 +1096,9 @@ def run_install_app(args) -> int:
             _PLIST.format(version=__version__), encoding="utf-8"
         )
         launcher = macos / "launch"
-        launcher.write_text(
-            "#!/bin/bash\n"
-            f'cd "{package_dir}" || exit 1\n'
-            f'exec "{python}" -m capcut_agent.cli app\n',
-            encoding="utf-8",
-        )
+        launcher.write_text(_mac_launcher(package_dir, python), encoding="utf-8")
         launcher.chmod(0o755)
+        _clear_quarantine(bundle)
         target = bundle
     else:
         root = Path(args.dest).expanduser() if args.dest else (
@@ -1064,12 +1123,26 @@ def run_install_app(args) -> int:
             )
             target.chmod(0o755)
 
+    missing = [name for name in ("fastapi", "uvicorn")
+               if importlib.util.find_spec(name) is None]
+
     print(f"앱 설치   : {target}")
     print(f"파이썬    : {python}")
     print(f"패키지    : {package_dir}")
+    print(f"기록      : {APP_LOG}")
     print()
-    print("더블클릭하면 창이 열립니다.")
-    print("네이티브 창으로 띄우려면:  python3 -m pip install pywebview")
+    if missing:
+        # 이게 빠진 채로 더블클릭하면 창이 안 뜨고 끝난다.
+        print(f"⚠ 아직 실행되지 않습니다 — 빠진 패키지: {', '.join(missing)}")
+        print(f"  {python} -m pip install fastapi 'uvicorn[standard]' pywebview")
+        print()
+    else:
+        print("더블클릭하면 창이 열립니다.")
+        print("네이티브 창으로 띄우려면:  python3 -m pip install pywebview")
+        print()
+    print("열리지 않으면 터미널에서 직접 실행해 오류를 보세요:")
+    print(f'  "{target}/Contents/MacOS/launch"'
+          if str(target).endswith(".app") else f'  "{target}"')
     print()
     print("저장소를 다른 폴더로 옮기면 경로가 굳어 있어 다시 설치해야 합니다.")
     return 0
