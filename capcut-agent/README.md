@@ -169,6 +169,30 @@ python -m capcut_agent.cli build ~/CapCutAgent/scripts/강의.shorts.json
 
 ---
 
+### PC 앱 — `app`
+
+아이콘을 더블클릭하면 창이 열립니다. 터미널을 열 필요가 없습니다.
+
+```bash
+python -m pip install fastapi "uvicorn[standard]" pywebview
+python -m capcut_agent.cli install-app     # 앱 아이콘 만들기
+```
+
+| OS | 만들어지는 것 |
+|---|---|
+| macOS | `~/Applications/캡컷 에이전트.app` |
+| Windows | 바탕화면 `캡컷 에이전트.cmd` |
+| 그 외 | 바탕화면 `캡컷 에이전트.sh` |
+
+`pywebview` 가 없으면 기본 브라우저로 열립니다. 기능은 같고 창 모양만 다릅니다.
+
+> 앱 아이콘에는 **지금의 파이썬 경로와 패키지 위치가 굳어** 들어갑니다.
+> 저장소를 다른 폴더로 옮기면 `install-app` 을 다시 실행하세요.
+
+터미널에서 바로 띄우려면 `python -m capcut_agent.cli app`.
+
+---
+
 ### 로컬 대시보드 — `serve`
 
 터미널 대신 화면에서 돌립니다. inbox 를 훑어 작업으로 등록하고, 하나씩 편집한 뒤
@@ -181,16 +205,25 @@ python -m capcut_agent.cli serve          # http://127.0.0.1:8765
 
 바깥으로 열지 않습니다. 기본 바인딩은 `127.0.0.1` 입니다.
 
+**inbox 에 파일을 넣기만 하면 자동으로 등록**됩니다. 복사가 끝날 때까지 기다렸다
+등록하므로, 큰 영상을 옮기는 도중에 반쪽짜리 파일을 건드리지 않습니다.
+
 작업 상태는 한 방향으로만 흐릅니다.
 
 ```
-대기 ──▶ 편집 중 ──▶ 검수 대기 ──▶ 검수 완료
-            │
-            └──────▶ 실패 ──▶ (다시 대기)
+등록 ─▶ 편집 중 ─▶ 검수 대기 ─▶ 검수 완료 ─▶ 전송 중 ─▶ 전송 완료 ─▶ 업로드 완료
+           │          ▲(사람)                                 ▲(사람)
+           └▶ 실패 ───┘
 ```
 
-**검수 완료된 작업은 조용히 되돌릴 수 없습니다.** 되돌리려면 명시적으로 재검수로
+**전송 완료와 업로드 완료는 반드시 구분합니다.** 드라이브에 올라간 것과 SNS 에
+게시된 것은 다른 일입니다. 하나로 뭉치면 올리지도 않은 영상을 게시했다고 착각합니다.
+
+**검수 완료된 작업은 조용히 되돌릴 수 없습니다.** 되돌리려면 `재검수` 로 명시적으로
 보내야 합니다 — 승인 안 된 버전이 올라가는 걸 막기 위해서입니다.
+
+사람이 손대야 넘어가는 단계는 둘뿐입니다 — **검수 대기**(캡컷에서 재생해 확인)와
+**전송 완료**(SNS 게시 후 확정).
 
 | 엔드포인트 | 하는 일 |
 |---|---|
@@ -198,6 +231,7 @@ python -m capcut_agent.cli serve          # http://127.0.0.1:8765
 | `GET /api/jobs` | 작업 목록 |
 | `POST /api/jobs/{id}/approve` | 검수 완료 |
 | `POST /api/jobs/{id}/retry` | 실패한 작업을 다시 대기열로 |
+| `POST /api/jobs/{id}/reopen` | 승인된 작업을 재검수로 되돌림 |
 | `GET /api/events` | SSE — 진행 상황 실시간 |
 | `GET /api/status` | 환경 점검 + 저장소 경로 + 집계 |
 
@@ -349,14 +383,16 @@ capcut-agent/
 │   ├── transcribe.py   # 로컬 whisper + 내용 해시 캐시 + ASR 락
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
-│   ├── cli.py          # check / cut / caption / shorts / build / serve
+│   ├── cli.py          # check / cut / caption / shorts / build / serve / app
+│   ├── desktop.py      # PC 앱 — 서버 + 네이티브 창
 │   └── web/            # 로컬 대시보드
 │       ├── app.py      #   FastAPI 라우트 + SSE
 │       ├── jobs.py     #   SQLite 작업 저장소 + 상태 전이
 │       ├── worker.py   #   큐를 비우는 단일 스레드 (CLI 를 호출)
 │       ├── events.py   #   SSE 브로커
+│       ├── watcher.py  #   inbox 자동 감지 (복사 완료까지 대기)
 │       └── static/     #   화면 한 장
-└── tests/              # pytest 262개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 289개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

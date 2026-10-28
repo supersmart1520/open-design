@@ -24,12 +24,26 @@ from threading import Lock
 from typing import Iterable
 
 #: 상태 전이표. 여기 없는 전이는 거부한다.
+#:
+#:   등록 ──▶ 편집 중 ──▶ 검수 대기 ──▶ 검수 완료 ──▶ 전송 중 ──▶ 전송 완료 ──▶ 업로드 완료
+#:               │             ▲                         │
+#:               └─▶ 실패 ─────┘                         └─▶ 실패
+#:
+#: **전송 완료와 업로드 완료를 반드시 구분한다.** 드라이브에 올라간 것과
+#: SNS 에 게시된 것은 다른 일이다. 하나로 뭉치면 올리지도 않은 영상을
+#: 게시했다고 착각한다.
 TRANSITIONS: dict[str, frozenset] = {
     "queued": frozenset({"running", "failed"}),
     "running": frozenset({"review", "failed"}),
     "review": frozenset({"approved", "queued", "failed"}),
-    "approved": frozenset({"review"}),
-    "failed": frozenset({"queued"}),
+    # 승인 뒤에도 고칠 일이 생기면 재검수로 되돌릴 수 있다.
+    "approved": frozenset({"review", "uploading"}),
+    "uploading": frozenset({"uploaded", "failed", "approved"}),
+    # 전송은 끝났지만 아직 게시 전. 다시 올릴 수도 있다.
+    "uploaded": frozenset({"published", "uploading", "review"}),
+    # 게시 뒤 잘못을 발견하면 되돌린다.
+    "published": frozenset({"uploaded"}),
+    "failed": frozenset({"queued", "approved"}),
 }
 
 STATUSES = tuple(TRANSITIONS)
@@ -40,8 +54,14 @@ STATUS_LABELS = {
     "running": "편집 중",
     "review": "검수 대기",
     "approved": "검수 완료",
+    "uploading": "전송 중",
+    "uploaded": "전송 완료",
+    "published": "업로드 완료",
     "failed": "실패",
 }
+
+#: 사람이 손을 대야 넘어가는 단계. 자동화가 여기서 멈춘다.
+MANUAL_GATES = frozenset({"review", "uploaded"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (

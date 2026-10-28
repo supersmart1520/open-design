@@ -24,7 +24,8 @@ from pydantic import BaseModel
 from .. import storage
 from ..env_check import format_report, run_checks
 from .events import EventBroker, sse
-from .jobs import STATUS_LABELS, JobStore, TransitionError
+from .jobs import MANUAL_GATES, STATUS_LABELS, JobStore, TransitionError
+from .watcher import InboxWatcher
 from .worker import Worker
 
 STATIC = Path(__file__).parent / "static"
@@ -57,12 +58,21 @@ def create_app(workspace_path: str | Path | None = None,
     broker = EventBroker()
     worker = Worker(store, broker, workspace.home, draft_dir)
 
+    def _register(paths) -> None:
+        """감시기가 찾은 파일을 작업으로 올린다."""
+        for job in store.add_many(paths, JobOptions().model_dump()):
+            broker.publish("job", {"job": job.to_dict()})
+
+    watcher = InboxWatcher(workspace, _register)
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         worker.start()
+        watcher.start()
         try:
             yield
         finally:
+            watcher.stop()
             worker.stop()
 
     app = FastAPI(title="캡컷 에이전트", docs_url=None, redoc_url=None,
@@ -71,6 +81,7 @@ def create_app(workspace_path: str | Path | None = None,
     app.state.store = store
     app.state.broker = broker
     app.state.worker = worker
+    app.state.watcher = watcher
 
     # ----------------------------------------------------------- 페이지
 
@@ -99,7 +110,9 @@ def create_app(workspace_path: str | Path | None = None,
             },
             "counts": store.counts(),
             "labels": STATUS_LABELS,
+            "manualGates": sorted(MANUAL_GATES),
             "workerRunning": worker.running,
+            "watcherRunning": watcher.running,
         }
 
     @app.get("/api/jobs")
@@ -139,6 +152,14 @@ def create_app(workspace_path: str | Path | None = None,
     @app.post("/api/jobs/{job_id}/retry")
     def retry(job_id: str) -> dict:
         return _transition(job_id, "queued", "다시 대기열로")
+
+    @app.post("/api/jobs/{job_id}/reopen")
+    def reopen(job_id: str) -> dict:
+        """승인 뒤에 고칠 게 보이면 재검수로 되돌린다.
+
+        승인된 채로 조용히 고치면 어느 버전이 올라갔는지 알 수 없게 된다.
+        """
+        return _transition(job_id, "review", "재검수")
 
     @app.delete("/api/jobs/{job_id}")
     def remove(job_id: str) -> dict:

@@ -102,7 +102,8 @@
 
   <hr>
   <div class="bar">
-    <button class="go" id="scan">inbox 훑기</button>
+    <button class="go" id="scan">지금 훑기</button>
+    <span class="meta" id="watch">…</span>
     <code id="inbox">…</code>
   </div>
 
@@ -123,7 +124,9 @@ const STAGE = {
 function dotClass(status) {
   if (status === "running") return "dot run";
   if (status === "failed") return "dot bad";
-  if (status === "review" || status === "approved") return "dot on";
+  if (status === "uploading") return "dot run";
+  if (["review", "approved", "uploaded", "published"].includes(status))
+    return "dot on";
   return "dot";
 }
 
@@ -153,6 +156,8 @@ function render() {
     const acts = [];
     if (job.status === "review")
       acts.push(`<button class="go" data-act="approve" data-id="${job.id}">검수 완료</button>`);
+    if (["approved", "uploaded"].includes(job.status))
+      acts.push(`<button data-act="reopen" data-id="${job.id}">재검수</button>`);
     if (job.status === "failed")
       acts.push(`<button data-act="retry" data-id="${job.id}">다시</button>`);
     if (job.status !== "running")
@@ -191,6 +196,8 @@ async function refresh() {
   $("track").textContent = `${status.trackLabel} · ASR ${status.asr}`;
   $("inbox").textContent = status.workspace.inbox;
   $("live").className = status.workerRunning ? "dot on" : "dot bad";
+  $("watch").textContent = status.watcherRunning
+    ? "inbox 자동 감지 켜짐" : "자동 감지 꺼짐";
 
   $("checks").innerHTML = status.checks.map((c) =>
     `<span class="chk"><span class="dot ${c.ok ? "on" : "bad"}"></span>${c.name}</span>`
@@ -200,9 +207,9 @@ async function refresh() {
 
   const counts = status.counts;
   $("stats").innerHTML = [
-    ["대기", counts.queued + counts.running],
+    ["편집 대기 · 중", counts.queued + counts.running],
     ["검수 대기", counts.review],
-    ["검수 완료", counts.approved],
+    ["게시 대기", counts.approved + counts.uploading + counts.uploaded],
   ].map(([label, n]) => `<div class="stat"><b>${n}</b><span>${label}</span></div>`).join("");
 
   jobs.clear();

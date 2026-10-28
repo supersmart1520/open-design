@@ -51,8 +51,8 @@ from .silence import (
 from .subtitle import Word, auto_max_chars, cues_from_words, fill_gaps, to_srt
 from .transcribe import BackendMissing, Transcript, pick_backend, transcribe
 
-SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build", "serve",
-                "install-skill")
+SUBCOMMANDS = ("check", "cut", "caption", "shorts", "build", "serve", "app",
+                "install-skill", "install-app")
 
 
 def _fmt(seconds: float) -> str:
@@ -162,6 +162,16 @@ def build_parser() -> argparse.ArgumentParser:
                        help="바인딩 주소 (기본 %(default)s — 바깥으로 열지 않는다)")
     serve.add_argument("--port", type=int, default=8765, help="포트 (기본 %(default)s)")
     serve.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
+
+    desktop = subparsers.add_parser("app", help="PC 앱으로 실행 (창 하나)")
+    desktop.add_argument("--port", type=int, default=8765, help="포트 (기본 %(default)s)")
+    desktop.add_argument("--draft-dir", help="캡컷 드래프트 루트 직접 지정")
+
+    install_app = subparsers.add_parser(
+        "install-app", help="더블클릭으로 실행되는 앱 아이콘을 만든다"
+    )
+    install_app.add_argument("--dest", help="설치 위치 (기본: macOS ~/Applications, "
+                                            "그 외 바탕화면)")
 
     skill = subparsers.add_parser(
         "install-skill", help="Claude Code 가 이 도구를 쓸 수 있게 스킬을 설치"
@@ -800,6 +810,104 @@ def run_build(args, workspace) -> int:
     return 0
 
 
+def run_app(args, workspace) -> int:
+    """PC 앱. 서버를 띄우고 창을 연다."""
+    try:
+        import uvicorn  # noqa: F401
+    except ImportError:
+        print("앱 실행에는 추가 패키지가 필요합니다:", file=sys.stderr)
+        print("  python3 -m pip install fastapi 'uvicorn[standard]' pywebview",
+              file=sys.stderr)
+        return 1
+
+    from .desktop import run as run_desktop
+
+    return run_desktop(workspace.home, args.draft_dir, args.port)
+
+
+_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" \
+"http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>캡컷 에이전트</string>
+  <key>CFBundleDisplayName</key><string>캡컷 에이전트</string>
+  <key>CFBundleIdentifier</key><string>com.capcutagent.launcher</string>
+  <key>CFBundleVersion</key><string>{version}</string>
+  <key>CFBundleShortVersionString</key><string>{version}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleExecutable</key><string>launch</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+"""
+
+
+def run_install_app(args) -> int:
+    """더블클릭으로 실행되는 아이콘을 만든다.
+
+    파이썬 경로와 패키지 위치를 지금 값으로 굳혀 넣는다. 저장소를 옮기면
+    다시 돌려야 한다 — 그 사실을 출력에 적어 둔다.
+    """
+    from . import __version__
+
+    package_dir = Path(__file__).resolve().parent.parent
+    python = sys.executable
+    system = platform.system()
+
+    if system == "Darwin":
+        root = Path(args.dest).expanduser() if args.dest else (
+            Path.home() / "Applications"
+        )
+        bundle = root / "캡컷 에이전트.app"
+        macos = bundle / "Contents" / "MacOS"
+        macos.mkdir(parents=True, exist_ok=True)
+        (bundle / "Contents" / "Info.plist").write_text(
+            _PLIST.format(version=__version__), encoding="utf-8"
+        )
+        launcher = macos / "launch"
+        launcher.write_text(
+            "#!/bin/bash\n"
+            f'cd "{package_dir}" || exit 1\n'
+            f'exec "{python}" -m capcut_agent.cli app\n',
+            encoding="utf-8",
+        )
+        launcher.chmod(0o755)
+        target = bundle
+    else:
+        root = Path(args.dest).expanduser() if args.dest else (
+            Path.home() / "Desktop"
+        )
+        root.mkdir(parents=True, exist_ok=True)
+        if system == "Windows":
+            target = root / "캡컷 에이전트.cmd"
+            target.write_text(
+                "@echo off\r\n"
+                f'cd /d "{package_dir}"\r\n'
+                f'"{python}" -m capcut_agent.cli app\r\n',
+                encoding="utf-8",
+            )
+        else:
+            target = root / "캡컷 에이전트.sh"
+            target.write_text(
+                "#!/bin/bash\n"
+                f'cd "{package_dir}" || exit 1\n'
+                f'exec "{python}" -m capcut_agent.cli app\n',
+                encoding="utf-8",
+            )
+            target.chmod(0o755)
+
+    print(f"앱 설치   : {target}")
+    print(f"파이썬    : {python}")
+    print(f"패키지    : {package_dir}")
+    print()
+    print("더블클릭하면 창이 열립니다.")
+    print("네이티브 창으로 띄우려면:  python3 -m pip install pywebview")
+    print()
+    print("저장소를 다른 폴더로 옮기면 경로가 굳어 있어 다시 설치해야 합니다.")
+    return 0
+
+
 def run_install_skill(args) -> int:
     """Claude Code 가 찾는 자리에 스킬을 놓는다.
 
@@ -895,6 +1003,10 @@ def main(argv: list[str] | None = None) -> int:
         return run_serve(args, workspace)
     if args.command == "install-skill":
         return run_install_skill(args)
+    if args.command == "app":
+        return run_app(args, workspace)
+    if args.command == "install-app":
+        return run_install_app(args)
     parser.print_help()
     return 2
 

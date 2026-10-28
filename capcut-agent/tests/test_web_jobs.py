@@ -132,3 +132,55 @@ def test_the_store_survives_a_reopen(tmp_path):
     path = tmp_path / "jobs.sqlite"
     JobStore(path).add("/videos/a.mp4")
     assert len(JobStore(path).list()) == 1
+
+
+# --------------------------------------- 전송 / 게시 (2.0 흐름)
+
+
+def test_drive_transfer_and_publishing_are_separate_states(store):
+    """드라이브에 올라간 것과 SNS 에 게시된 것은 다른 일이다.
+
+    하나로 뭉치면 올리지도 않은 영상을 게시했다고 착각한다.
+    """
+    job = store.add("/videos/a.mp4")
+    for status in ("running", "review", "approved", "uploading", "uploaded"):
+        job = store.transition(job.id, status)
+    assert job.status == "uploaded"
+    assert store.transition(job.id, "published").status == "published"
+
+
+def test_approval_cannot_jump_straight_to_published(store):
+    job = store.add("/videos/a.mp4")
+    for status in ("running", "review", "approved"):
+        store.transition(job.id, status)
+    with pytest.raises(TransitionError):
+        store.transition(job.id, "published")
+
+
+def test_a_failed_transfer_returns_to_approved_not_to_the_queue(store):
+    """전송이 실패했다고 편집부터 다시 하지는 않는다."""
+    job = store.add("/videos/a.mp4")
+    for status in ("running", "review", "approved", "uploading"):
+        store.transition(job.id, status)
+    assert store.transition(job.id, "approved").status == "approved"
+
+
+def test_an_uploaded_job_can_be_sent_back_for_re_review(store):
+    job = store.add("/videos/a.mp4")
+    for status in ("running", "review", "approved", "uploading", "uploaded"):
+        store.transition(job.id, status)
+    assert store.transition(job.id, "review").status == "review"
+
+
+def test_a_published_job_can_be_corrected(store):
+    job = store.add("/videos/a.mp4")
+    for status in ("running", "review", "approved", "uploading", "uploaded",
+                   "published"):
+        store.transition(job.id, status)
+    assert store.transition(job.id, "uploaded").status == "uploaded"
+
+
+def test_the_manual_gates_are_the_two_human_steps():
+    from capcut_agent.web.jobs import MANUAL_GATES
+
+    assert MANUAL_GATES == {"review", "uploaded"}
