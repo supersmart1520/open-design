@@ -1059,7 +1059,18 @@ fi
 
 cd "$APPDIR" || exit 1
 {{ echo; echo "=== $(date) ==="; }} >>"$LOG"
-"$PY" -m capcut_agent.cli app >>"$LOG" 2>&1
+
+# Xcode 가 들고 오는 파이썬은 universal2 다. 터미널에서는 arm64 로 돌아서
+# pip 가 arm64 휠을 깔지만, `.app` 으로 띄우면 x86_64 로 뜨는 경우가 있다.
+# 그러면 방금 깐 arm64 확장(`_pydantic_core.so`)을 못 읽고 죽는다.
+# 기계가 arm64 면 그쪽으로 못박는다. 쓸 수 있는지 먼저 확인해서, 안 되면
+# 그냥 평소대로 돈다 — x86_64 전용 파이썬에서 arch 로 막히지 않게.
+ARCH=""
+if [ "$(uname -m)" = "arm64" ] && /usr/bin/arch -arm64 "$PY" -c "" 2>/dev/null; then
+  ARCH="/usr/bin/arch -arm64"
+fi
+
+$ARCH "$PY" -m capcut_agent.cli app >>"$LOG" 2>&1
 STATUS=$?
 
 if [ $STATUS -ne 0 ]; then

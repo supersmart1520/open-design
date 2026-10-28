@@ -208,3 +208,28 @@ def test_macos_defaults_to_staging_and_others_do_not():
     assert default_media_mode("Darwin") == "auto"
     assert default_media_mode("Windows") == "none"
     assert default_media_mode("Linux") == "none"
+
+
+# --- 소리만 있는 파일의 길이 ------------------------------------------------
+#
+# doctor 는 영상에서 소리만 뽑아 m4a 로 넘긴다. 그걸 `probe()` 로 조사하면
+# "비디오 트랙이 없습니다" 로 거부당해 자가진단 자체가 죽는다.
+
+
+def test_media_duration_reads_audio_only_file(tmp_path):
+    import subprocess
+
+    from capcut_agent.media import FFMPEG, media_duration, probe
+
+    clip = tmp_path / "probe.m4a"
+    subprocess.run(
+        [FFMPEG, "-y", "-v", "error", "-f", "lavfi",
+         "-i", "sine=frequency=330:duration=3", "-c:a", "aac", str(clip)],
+        check=True,
+    )
+
+    assert abs(media_duration(clip) - 3.0) < 0.5
+
+    # probe() 는 여전히 거부해야 한다 — 드래프트에는 프레임 크기가 필요하다.
+    with pytest.raises(RuntimeError, match="비디오 트랙이 없습니다"):
+        probe(clip)

@@ -144,6 +144,35 @@ def probe(video: str | Path) -> MediaInfo:
     return media_info_from_probe(json.loads(proc.stdout), path)
 
 
+def media_duration(path: str | Path) -> float:
+    """길이만 읽는다. **소리만 있는 파일에도 쓸 수 있다.**
+
+    `probe()` 는 비디오 트랙이 없으면 거부한다 — 프레임 크기와 회전을 알아야
+    드래프트를 쓸 수 있기 때문이다. 하지만 전사에 넘기는 m4a 처럼 소리만 있는
+    파일은 길이 하나만 알면 된다. 그걸 `probe()` 로 물어보면 영상이 아니라는
+    이유로 멀쩡한 오디오가 거부된다.
+    """
+    target = Path(path).expanduser().resolve()
+    if not target.is_file():
+        raise FileNotFoundError(f"입력 파일이 없습니다: {target}")
+
+    proc = _run_ok(
+        [FFPROBE, "-v", "error", "-print_format", "json",
+         "-show_format", "-show_streams", str(target)]
+    )
+    data = json.loads(proc.stdout)
+    seconds = float(data.get("format", {}).get("duration") or 0.0)
+    if seconds <= 0:
+        # 컨테이너가 길이를 안 들고 있는 경우. 스트림 쪽을 본다.
+        for stream in data.get("streams", []):
+            seconds = float(stream.get("duration") or 0.0)
+            if seconds > 0:
+                break
+    if seconds <= 0:
+        raise RuntimeError(f"길이를 읽지 못했습니다: {target}")
+    return seconds
+
+
 def detect_silence_raw(video: str | Path, noise_db: float, min_dur: float) -> str:
     """silencedetect 의 stderr 원문. 파싱은 silence.py 가 한다."""
     proc = _run_ok(

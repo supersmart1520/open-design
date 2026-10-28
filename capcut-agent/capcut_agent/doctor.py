@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import storage
-from .media import FFMPEG, probe
+from .media import FFMPEG, media_duration
 from .transcribe import BackendMissing, default_model, pick_backend, transcribe
 
 #: 진단에 쓸 길이 (초). 길면 오래 걸리고 짧으면 측정이 흔들린다.
@@ -101,18 +101,26 @@ def run(workspace, explicit=None, seconds: int = DEFAULT_SECONDS,
     scratch.mkdir(parents=True, exist_ok=True)
     clip = scratch / "probe.m4a"
 
-    if source.name:
-        on_progress(f"  … {label} 앞 {seconds}초를 잘라냅니다")
-        trim(source, clip, seconds)
-        origin = str(source)
-    else:
-        on_progress("  … 쓸 영상이 없어 합성음으로 확인합니다 (말은 없습니다)")
-        make_test_clip(clip, min(seconds, 5))
-        origin = "합성음"
+    origin = str(source) if source.name else "합성음"
 
-    info = probe(clip)
+    # 소리를 준비하다 실패하면 **진단 결과로** 보고한다. 자가진단이 스택
+    # 트레이스를 뱉으면, 무엇이 왜 안 되는지 알려주는 제 일을 못 한다.
+    try:
+        if source.name:
+            on_progress(f"  … {label} 앞 {seconds}초를 잘라냅니다")
+            trim(source, clip, seconds)
+        else:
+            on_progress("  … 쓸 영상이 없어 합성음으로 확인합니다 (말은 없습니다)")
+            make_test_clip(clip, min(seconds, 5))
+        measured = media_duration(clip)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        return Diagnosis(
+            backend=backend, model=model, source=origin, seconds=0.0,
+            error=f"소리를 준비하지 못했습니다 — {type(exc).__name__}: {exc}",
+        )
+
     diagnosis = Diagnosis(
-        backend=backend, model=model, source=origin, seconds=info.duration
+        backend=backend, model=model, source=origin, seconds=measured
     )
 
     on_progress(f"  … 모델을 올리고 전사합니다 ({backend} / {model})")
