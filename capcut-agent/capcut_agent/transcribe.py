@@ -21,6 +21,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from .eojeol import merge_eojeol
 from .media import extract_wav
 from .subtitle import Word
 
@@ -177,9 +178,12 @@ def normalize(raw: dict, model: str, language: str) -> Transcript:
 
     mlx-whisper 와 faster-whisper 모두 segments[].words[] 를 주지만 키 이름이
     조금 다르고, 단어 타임스탬프가 비어 올 수도 있다.
+
+    토막 텍스트는 **strip 하지 않고** 넘긴다. whisper BPE 의 선행 공백이
+    한국어 어절 경계 신호라서, 여기서 지우면 merge_eojeol 이 아무것도 못 한다.
     """
     segments: list[Segment] = []
-    words: list[Word] = []
+    raw_words: list[Word] = []
     for raw_segment in raw.get("segments", []):
         text = str(raw_segment.get("text", "")).strip()
         start = float(raw_segment.get("start", 0.0))
@@ -187,16 +191,16 @@ def normalize(raw: dict, model: str, language: str) -> Transcript:
         if text and end > start:
             segments.append(Segment(text, start, end))
         for raw_word in raw_segment.get("words", []) or []:
-            token = str(raw_word.get("word") or raw_word.get("text") or "").strip()
+            token = str(raw_word.get("word") or raw_word.get("text") or "")
             w_start = raw_word.get("start")
             w_end = raw_word.get("end")
-            if not token or w_start is None or w_end is None:
+            if not token.strip() or w_start is None or w_end is None:
                 continue
-            if float(w_end) <= float(w_start):
-                continue
-            words.append(Word(token, float(w_start), float(w_end)))
+            raw_words.append(Word(token, float(w_start), float(w_end)))
 
-    words.sort(key=lambda w: w.start)
+    raw_words.sort(key=lambda w: w.start)
+    # 쪼개진 토막을 어절로 복원한다. 자막 줄바꿈이 전부 여기에 걸려 있다.
+    words = merge_eojeol(raw_words)
     segments.sort(key=lambda s: s.start)
     return Transcript(
         language=str(raw.get("language") or language or ""),

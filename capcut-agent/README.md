@@ -272,11 +272,12 @@ capcut-agent/
 │   ├── silence.py      # 무음 → 보존 구간 (순수 로직)
 │   ├── framing.py      # 9:16 세로 크롭 계산 (순수 로직)
 │   ├── subtitle.py     # 한국어 줄바꿈 · 큐 묶기 · SRT (순수 로직)
+│   ├── eojeol.py       # whisper 토막 → 한국어 어절 복원 (순수 로직)
 │   ├── transcribe.py   # 로컬 whisper + 내용 해시 캐시 + ASR 락
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
 │   └── cli.py          # check / cut / caption / shorts / build
-└── tests/              # pytest 127개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 149개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash
@@ -317,5 +318,33 @@ python -m pytest tests -q
 
 8. **ASR 은 `asyncio.Lock` 으로 직렬화.** numba 가 스레드 안전하지 않아 동시 호출 시 segfault.
 9. **ASR 캐시 키는 content hash.** mtime 기반은 업로드마다 miss 납니다.
+
+9-1. **whisper 는 한국어 어절을 쪼갠다.** `"순서" + "가"`, `"중요합니" + "다"` 처럼
+   갈라져 나오면 자막 줄바꿈이 전부 어긋납니다. 복원 단서는 whisper BPE 의
+   **선행 공백**(`' '` / SentencePiece `'▁'`) — 새 어절을 시작하는 토막에만 붙습니다.
+   그래서 전사 결과를 **strip 하기 전에** `eojeol.merge_eojeol()` 로 합쳐야 합니다.
+   (이 접근은 [dawn-cut](https://github.com/kwakseongjae/dawn-cut) 에서 가져왔습니다 — `NOTICE` 참고)
 10. **자막 줄바꿈은 의존명사를 앞 어절에 붙여야 합니다** (`것`, `수`, `때`, `거` …).
 11. **자막 세로 위치는 `transform_y`.** 캡컷 좌표계는 화면 중앙이 0.
+
+---
+
+## 참고 프로젝트
+
+**[dawn-cut](https://github.com/kwakseongjae/dawn-cut)** (MIT) — 100% 로컬에서 도는
+오픈소스 영상 편집기. 텍스트 기반 컷, 무음 제거, 한국어 자동 자막, 9:16 리프레이밍,
+SRT·챕터 내보내기를 전부 로컬 whisper.cpp + FFmpeg 로 처리합니다.
+
+`eojeol.py` 의 한국어 어절 복원 접근을 여기서 가져왔습니다 (`NOTICE` 참고).
+
+**겹치지 않는 부분은 출력입니다.**
+
+| | dawn-cut | 캡컷 에이전트 |
+|---|---|---|
+| 출력 | MP4 · SRT · `.dawn` 프로젝트 | **캡컷 드래프트** |
+| 이후 편집 | dawn-cut 자체 타임라인 | **캡컷 안에서 사람이 이어서** |
+| 전사 | whisper.cpp (번들) | faster-whisper / mlx-whisper (설치) |
+| 완성도 | 편집기 한 벌 | 캡컷으로 넘기는 전처리기 |
+
+캡컷을 안 쓰실 거면 dawn-cut 쪽이 더 완결된 선택입니다. 캡컷에서 마무리하실 거면
+이 도구가 그 앞단을 맡습니다.
