@@ -1023,8 +1023,8 @@ APP_LOG = "~/CapCutAgent/app.log"
 #: fastapi/uvicorn 까지 같이 날아간다. 그래서 줄을 나눈다.
 def window_note(python: str = "python3") -> str:
     """창은 선택. venv 로 깔았으면 `python3` 이 아니라 그 파이썬이어야 한다."""
-    return f"창으로 띄우려면 (선택):  {python} -m pip install pywebview"
-WINDOW_FALLBACK = "  — 빌드가 깨지면 그냥 두세요. 브라우저로 열립니다."
+    return f"앱 자체 창으로 띄우려면 (선택):  {python} -m pip install pywebview"
+WINDOW_FALLBACK = "  — 없어도 됩니다. 크롬 계열이 있으면 탭 없는 창으로 열립니다."
 
 
 def install_hint(python: str = "python3") -> str:
@@ -1122,6 +1122,18 @@ exit $STATUS
 
 #: 런처가 시도하는 순서와 같다. 빈 문자열은 "그냥 실행".
 ARCH_CANDIDATES = (("/usr/bin/arch", "-arm64"), ("/usr/bin/arch", "-x86_64"), ())
+
+
+def has_module(python: str, arch: tuple[str, ...], name: str) -> bool:
+    """굳힐 파이썬이 그 모듈을 읽을 수 있나. 런처와 같은 방식으로 묻는다."""
+    try:
+        done = subprocess.run(
+            [*arch, python, "-c", f"import {name}"],
+            capture_output=True, timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return done.returncode == 0
 
 
 def working_arch(python: str) -> tuple[str, ...] | None:
@@ -1229,9 +1241,12 @@ def run_install_app(args) -> int:
         print("더블클릭하면 창이 열립니다.")
         if arch:
             print(f"  ({' '.join(arch)} 로 띄웁니다 — 패키지가 그쪽에 깔려 있습니다)")
-    print()
-    print(window_note(python))
-    print(WINDOW_FALLBACK)
+        print()
+        if has_module(python, arch, "webview"):
+            print("앱 자체 창으로 뜹니다 (pywebview).")
+        else:
+            print(window_note(python))
+            print(WINDOW_FALLBACK)
     print()
     print("열리지 않으면 터미널에서 직접 실행해 오류를 보세요:")
     print(f'  "{target}/Contents/MacOS/launch"'

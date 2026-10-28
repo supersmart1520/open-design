@@ -27,6 +27,10 @@ STARTUP_TIMEOUT = 20.0
 #: 것" 을 가른다. 창을 금방 닫는 건 잘못이 아니므로 알리면 안 된다.
 UP_MARKER = "__CAPCUT_APP_UP__"
 
+#: 네이티브 창이 이보다 빨리 닫히면 띄우지 못한 것으로 본다. 사람이
+#: 1~2초 만에 창을 닫을 일은 없다.
+MIN_WINDOW_SECONDS = 3.0
+
 WINDOW_TITLE = "캡컷 에이전트"
 WINDOW_SIZE = (1080, 820)
 
@@ -114,30 +118,56 @@ def app_mode_command(url: str, system: str | None = None,
     return None
 
 
+def open_fallback(url: str) -> str:
+    """창 없이 여는 길. 크롬 계열 앱 모드 → 그냥 브라우저 탭."""
+    command = app_mode_command(url)
+    if command is not None:
+        try:
+            subprocess.run(command, check=True, capture_output=True, timeout=20)
+            return "app-window"
+        except (OSError, subprocess.SubprocessError):
+            pass  # 브라우저 탭으로 떨어진다. 기능은 같다.
+    webbrowser.open(url)
+    return "browser"
+
+
+def open_native(url: str) -> float | None:
+    """`pywebview` 로 창을 띄우고 **열려 있던 시간**을 돌려준다.
+
+    `None` 은 pywebview 가 없다는 뜻. 띄우지 못했는데도 예외 없이 바로
+    돌아오는 경우가 있어서, 성공/실패 대신 시간을 돌려준다 — 부른 쪽이
+    "닫은 것" 과 "뜨지 못한 것" 을 가를 수 있게.
+    """
+    try:
+        import webview  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+
+    started = time.monotonic()
+    try:
+        webview.create_window(
+            WINDOW_TITLE, url,
+            width=WINDOW_SIZE[0], height=WINDOW_SIZE[1], min_size=(720, 560),
+        )
+        webview.start()
+    except Exception:
+        # 창을 못 띄웠다고 앱이 끝나면 안 된다. 다른 길이 남아 있다.
+        return 0.0
+    return time.monotonic() - started
+
+
 def open_window(url: str) -> str:
     """창을 연다. 좋은 쪽부터 차례로 떨어진다.
 
     `pywebview` → 크롬 계열 앱 모드 → 그냥 브라우저 탭. 어느 쪽으로
     열었는지 돌려준다 — 사용자에게 알려주기 위해서다.
     """
-    try:
-        import webview  # type: ignore[import-not-found]
-    except ImportError:
-        command = app_mode_command(url)
-        if command is not None:
-            try:
-                subprocess.run(command, check=True, capture_output=True, timeout=20)
-                return "app-window"
-            except (OSError, subprocess.SubprocessError):
-                pass  # 브라우저 탭으로 떨어진다. 기능은 같다.
-        webbrowser.open(url)
-        return "browser"
-
-    webview.create_window(
-        WINDOW_TITLE, url,
-        width=WINDOW_SIZE[0], height=WINDOW_SIZE[1], min_size=(720, 560),
-    )
-    webview.start()
+    lived = open_native(url)
+    if lived is None:
+        return open_fallback(url)
+    if lived < MIN_WINDOW_SECONDS:
+        # 띄우지 못했다. 여기서 끝내면 아이콘만 깜빡이고 사라진다.
+        return "window-failed"
     return "window"
 
 
@@ -155,10 +185,12 @@ def run(workspace: Path, draft_dir: str | None = None,
         on_message("서버가 뜨지 않았습니다.")
         return 1
 
-    on_message(UP_MARKER)
-
     try:
         how = open_window(server.url)
+        if how == "window-failed":
+            on_message("네이티브 창이 뜨지 못했습니다. 다른 방법으로 엽니다.")
+            how = open_fallback(server.url)
+
         if how != "window":
             on_message("")
             if how == "app-window":
@@ -168,6 +200,7 @@ def run(workspace: Path, draft_dir: str | None = None,
             # 지금 돌고 있는 파이썬을 적는다. venv 안이면 그 경로여야 한다.
             on_message(f"앱 자체 창으로 띄우려면:  {sys.executable} -m pip install pywebview")
             on_message("종료하려면 Ctrl+C")
+            on_message(UP_MARKER)
             # pywebview 가 아니면 창 닫힘 신호가 오지 않는다. 사용자가 끊을
             # 때까지 띄워 둔다 — 여기서 끝내면 서버도 같이 내려간다.
             while True:
