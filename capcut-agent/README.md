@@ -93,7 +93,7 @@ OS를 감지해 트랙을 판정하고, 저장소 경로와 각 폴더의 파일
 
 | 항목 | Mac | Windows |
 |---|---|---|
-| Python 3.10+ | `brew install python@3.11` | [python.org](https://www.python.org/downloads/) |
+| Python 3.9+ | macOS 기본 파이썬으로 충분 (Xcode 번들 3.9) | [python.org](https://www.python.org/downloads/) |
 | ffmpeg / ffprobe | `brew install ffmpeg` | `winget install --id Gyan.FFmpeg -e` |
 | 캡컷 드래프트 폴더 | 캡컷 설치 후 **1회 실행**해 프로젝트 1개 생성 | 동일 |
 
@@ -304,7 +304,7 @@ capcut-agent/
 │   ├── highlight.py    # 대본 → 숏폼 후보 추천 + 승인 교환 파일
 │   ├── draft.py        # 캡컷 드래프트 빌더 (video / audio / text 트랙)
 │   └── cli.py          # check / cut / caption / shorts / build
-└── tests/              # pytest 185개 — ffmpeg·whisper 없이도 도는 테스트
+└── tests/              # pytest 188개 — ffmpeg·whisper 없이도 도는 테스트
 ```
 
 ```bash

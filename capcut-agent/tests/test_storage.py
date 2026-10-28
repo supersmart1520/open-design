@@ -111,3 +111,36 @@ def test_write_report_does_not_overwrite(ws):
     second = storage.write_report(ws, "talk", {"n": 2})
     assert first != second
     assert json.loads(first.read_text(encoding="utf-8"))["n"] == 1
+
+
+# --------------------------------------------------- 파이썬 버전 바닥
+
+
+def test_the_python_floor_matches_what_macos_ships():
+    """macOS 기본 파이썬이 3.9 다. 이보다 높이 잡으면 brew 설치를 강요하게 된다."""
+    from capcut_agent.env_check import MIN_PYTHON
+
+    assert MIN_PYTHON <= (3, 9)
+
+
+def test_the_version_check_accepts_the_floor(monkeypatch, ws):
+    from capcut_agent import env_check
+
+    monkeypatch.setattr(env_check.platform, "python_version_tuple",
+                        lambda: ("3", "9", "6"))
+    monkeypatch.setattr(env_check.platform, "python_version", lambda: "3.9.6")
+    report = env_check.run_checks(ws)
+    python_check = next(c for c in report.checks if c.name.startswith("python"))
+    assert python_check.ok
+
+
+def test_the_version_check_rejects_too_old(monkeypatch, ws):
+    from capcut_agent import env_check
+
+    monkeypatch.setattr(env_check.platform, "python_version_tuple",
+                        lambda: ("3", "7", "0"))
+    monkeypatch.setattr(env_check.platform, "python_version", lambda: "3.7.0")
+    report = env_check.run_checks(ws)
+    python_check = next(c for c in report.checks if c.name.startswith("python"))
+    assert not python_check.ok
+    assert python_check.fix

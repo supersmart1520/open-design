@@ -21,6 +21,14 @@ from .storage import Workspace, describe
 
 MIN_FREE_GB = 5.0
 
+#: 요구 파이썬 버전.
+#:
+#: macOS 가 Xcode 와 함께 깔아주는 파이썬이 3.9 다. 거기에 mlx-whisper 를 깔고
+#: 쓰는 게 가장 마찰이 적어, 바닥을 3.9 로 잡았다. 모든 모듈이
+#: `from __future__ import annotations` 를 쓰므로 `X | None` 같은 표기도
+#: 문자열로만 남아 3.9 에서 문제가 없다 (vermin 정적 분석 기준 실제 최소는 3.8).
+MIN_PYTHON = (3, 9)
+
 #: 드래프트 폴더가 없어도 일단 돌려볼 수 있는 점검 항목 이름.
 DRAFT_CHECK_NAME = "CapCut 드래프트 폴더"
 
@@ -102,9 +110,10 @@ def run_checks(workspace: Workspace | None = None) -> Report:
     )
 
     py = platform.python_version_tuple()
-    py_ok = (int(py[0]), int(py[1])) >= (3, 10)
+    py_ok = (int(py[0]), int(py[1])) >= MIN_PYTHON
+    label = f"python >= {MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
     report.checks.append(
-        Check("python >= 3.10", py_ok, platform.python_version(),
+        Check(label, py_ok, platform.python_version(),
               "" if py_ok else _python_hint(system))
     )
 
