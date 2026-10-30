@@ -198,8 +198,12 @@ def make_title(
         # 빈 텍스트 세그먼트는 캡컷에서 빈 상자로 남는다.
         return None
 
-    if len(line1) + len(line2) > max_chars:
-        line2 = _trim(line2, max(0, max_chars - len(line1)))
+    # 0 이하는 "제한 없음" 이라는 뜻이다. 그걸 예산 0 으로 읽으면 2행이
+    # 통째로 잘려 나가고, 제목이 조용히 한 줄짜리가 된다 — 색도 크기도
+    # 둘로 갈리지 않으니 썸네일이 통째로 무너진다.
+    budget = max_chars if max_chars > 0 else DEFAULT_MAX_CHARS
+    if len(line1) + len(line2) > budget:
+        line2 = _trim(line2, max(0, budget - len(line1)))
     return Title(line1, line2, PALETTES.get(palette, PALETTES[DEFAULT_PALETTE]))
 
 

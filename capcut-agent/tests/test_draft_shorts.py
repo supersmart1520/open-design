@@ -355,3 +355,49 @@ def test_motion_never_outlasts_a_very_short_cue(tmp_path):
     builder.add_subtitles([SubtitleCue(0.0, 0.2, "짧")], SubtitleStyle(motion="pop"))
     for track in _text_segment_of(builder)["common_keyframes"]:
         assert track["keyframe_list"][-1]["time_offset"] <= int(0.2 * US)
+
+
+# --- 숏폼에도 제목이 붙는가 -------------------------------------------------------
+#
+# 제목은 `caption` 에만 있었다. 숏폼은 대시보드의 주 경로인데 거기에 제목이
+# 아예 없었다 — 화면에서 디자인을 골라도 결과에 아무 일도 일어나지 않았다.
+
+
+def test_shorts_parser_accepts_title_options():
+    from capcut_agent.cli import build_parser
+
+    for command in ("shorts", "build"):
+        parser = build_parser()
+        args = parser.parse_args(
+            [command, "x", "--title-layout", "상단", "--title-palette", "red"]
+            if command == "shorts"
+            else [command, "x.json", "--title-layout", "상단", "--title-palette", "red"]
+        )
+        assert args.title_layout == "상단"
+        assert args.title_palette == "red"
+
+
+def test_auto_build_passes_the_title_through():
+    """자동 경로가 제목 설정을 빠뜨리면, 대시보드에서 고른 디자인이 안 먹는다."""
+    import inspect
+
+    from capcut_agent import cli
+
+    source = inspect.getsource(cli._auto_build)
+    for field in ("title_layout", "title_palette", "title_seconds", "no_title"):
+        assert field in source, f"{field} 를 넘기지 않습니다"
+
+
+def test_worker_turns_no_title_into_no_title_not_no_subtitle():
+    # 제목을 끄랬더니 자막을 끄고 있었다. 뜻이 전혀 다르다.
+    import pathlib
+    import types
+
+    from capcut_agent.web.worker import build_command
+
+    job = types.SimpleNamespace(
+        source="/v.mp4", options={"shortsCount": 3, "noTitle": True})
+    command = build_command(job, pathlib.Path("/ws"))
+
+    assert "--no-title" in command
+    assert "--no-subtitle" not in command

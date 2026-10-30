@@ -26,6 +26,8 @@ from . import storage
 from .draft import (
     DEFAULT_TITLE_LAYOUT,
     TITLE_LAYOUTS,
+    TITLE_SECONDS,
+    TITLE_X_PX,
     SPEECH_Y_PX,
     TITLE_FONT_SIZE,
     TITLE_SECONDS,
@@ -190,6 +192,23 @@ def build_parser() -> argparse.ArgumentParser:
     shorts.add_argument("--min-seconds", type=float, default=18.0, help="후보 최소 길이")
     shorts.add_argument("--max-seconds", type=float, default=60.0, help="후보 최대 길이")
     shorts.add_argument("--limit", type=int, default=8, help="추천 개수")
+    shorts.add_argument("--title-layout", choices=sorted(TITLE_LAYOUTS),
+                        default=DEFAULT_TITLE_LAYOUT,
+                        help="제목 배치 (중앙=화면을 채움, 상단=얼굴 위 두 줄)")
+    shorts.add_argument("--title-palette", choices=sorted(PALETTES),
+                        default="green", help="제목 색 조합")
+    shorts.add_argument("--title-y", type=float, default=None,
+                        help="제목 세로 위치 (픽셀, 중앙이 0)")
+    shorts.add_argument("--title-x", type=float, default=TITLE_X_PX,
+                        help="제목 가로 위치 (픽셀, 중앙이 0)")
+    shorts.add_argument("--title-font-size", type=float, default=None,
+                        help="제목 글자 크기")
+    shorts.add_argument("--title-seconds", type=float, default=TITLE_SECONDS,
+                        help="제목이 떠 있는 시간 (초)")
+    shorts.add_argument("--title-max-chars", type=int, default=0,
+                        help="제목 한 줄 글자 수 상한")
+    shorts.add_argument("--no-title", action="store_true",
+                        help="제목을 넣지 않습니다")
     shorts.add_argument("--local-only", action="store_true",
                         help="모델을 쓰지 않고 규칙 기반으로만 고릅니다")
     shorts.add_argument("--llm-model", default="",
@@ -252,6 +271,23 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--subtitle-y", type=float, default=-0.72,
                        help="자막 세로 위치. 화면 중앙 0, 아래가 음수.")
     build.add_argument("--no-subtitle", action="store_true", help="자막 트랙 생략")
+    build.add_argument("--title-layout", choices=sorted(TITLE_LAYOUTS),
+                        default=DEFAULT_TITLE_LAYOUT,
+                        help="제목 배치 (중앙=화면을 채움, 상단=얼굴 위 두 줄)")
+    build.add_argument("--title-palette", choices=sorted(PALETTES),
+                        default="green", help="제목 색 조합")
+    build.add_argument("--title-y", type=float, default=None,
+                        help="제목 세로 위치 (픽셀, 중앙이 0)")
+    build.add_argument("--title-x", type=float, default=TITLE_X_PX,
+                        help="제목 가로 위치 (픽셀, 중앙이 0)")
+    build.add_argument("--title-font-size", type=float, default=None,
+                        help="제목 글자 크기")
+    build.add_argument("--title-seconds", type=float, default=TITLE_SECONDS,
+                        help="제목이 떠 있는 시간 (초)")
+    build.add_argument("--title-max-chars", type=int, default=0,
+                        help="제목 한 줄 글자 수 상한")
+    build.add_argument("--no-title", action="store_true",
+                        help="제목을 넣지 않습니다")
     build.add_argument("--srt", action="store_true", help="SRT 도 같이 내보낸다")
     return parser
 
@@ -851,6 +887,7 @@ def choose_candidates(args, workspace, transcript):
 
 
 def run_shorts(args, workspace) -> int:
+    resolve_title_layout(args)
     report = run_checks(workspace)
     # 드래프트를 아직 쓰지 않으므로 캡컷이 없어도 된다.
     if blocking_checks(report, args, needs_draft=False):
@@ -940,12 +977,18 @@ def _auto_build(args, workspace, plan_path: Path, candidates) -> int:
 
     print()
     print(f"자동 선택  : 점수 상위 {len(chosen)}개")
+    # 제목 설정을 같이 넘긴다. 빠뜨리면 자동 경로에서만 제목이 사라지는데,
+    # 대시보드는 늘 이 경로로 돈다 — 화면에서 고른 디자인이 안 먹는다.
     build_args = argparse.Namespace(
         plan=str(plan_path), draft_dir=args.draft_dir, anchor=args.anchor,
         max_chars=args.max_chars, font_size=args.font_size,
         motion=args.motion, subtitle_y=args.subtitle_y,
         no_subtitle=args.no_subtitle, srt=args.srt,
         json=getattr(args, "json", False),
+        title_layout=args.title_layout, title_palette=args.title_palette,
+        title_y=args.title_y, title_x=args.title_x,
+        title_font_size=args.title_font_size, title_seconds=args.title_seconds,
+        title_max_chars=args.title_max_chars, no_title=args.no_title,
     )
     return run_build(build_args, workspace)
 
@@ -971,6 +1014,7 @@ def _window_cues(transcript: Transcript, start: float, end: float, max_chars: in
 
 
 def run_build(args, workspace) -> int:
+    resolve_title_layout(args)
     report = run_checks(workspace)
     if blocking_checks(report, args):
         print(format_report(report), file=sys.stderr)
@@ -1022,7 +1066,30 @@ def run_build(args, workspace) -> int:
         cues = []
         if transcript is not None and not args.no_subtitle:
             cues = _window_cues(transcript, candidate.start, candidate.end, max_chars)
+
+        # 후보 제목이 곧 썸네일 문구다. 구간마다 내용이 다르니 제목도 다르다.
+        title = None if args.no_title else make_title(
+            candidate.title, args.title_palette, args.title_max_chars
+        )
+        title_span = None
+        if title is not None:
+            title_span = (0.0, min(args.title_seconds, candidate.duration))
+            # 제목이 떠 있는 동안 말하는 자막이 겹치면 첫 장면이 지저분해진다.
+            cues = [c for c in cues
+                    if c.end <= title_span[0] or c.start >= title_span[1]]
+
+        if cues:
             builder.add_subtitles(cues, style)
+        if title is not None and title_span is not None:
+            builder.add_title(
+                title,
+                SubtitleStyle.from_pixels(
+                    args.title_y, builder.canvas.height,
+                    args.title_x, builder.canvas.width,
+                    font_size=args.title_font_size, motion=args.motion,
+                ),
+                start=title_span[0], end=title_span[1],
+            )
 
         folder = builder.write(draft_root)
         made.append((candidate, folder, cues))
@@ -1046,6 +1113,8 @@ def run_build(args, workspace) -> int:
         "만든것": [
             {
                 "번호": c.index, "제목": c.title,
+                "제목배치": None if args.no_title else args.title_layout,
+                "제목색": None if args.no_title else args.title_palette,
                 "시작": round(c.start, 2), "끝": round(c.end, 2),
                 "길이": round(c.duration, 1), "자막장수": len(cues),
                 "드래프트": str(folder),

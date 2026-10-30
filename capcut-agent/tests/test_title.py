@@ -180,3 +180,33 @@ def test_an_over_long_title_is_trimmed_at_a_word_boundary():
 
 def test_the_rendered_text_is_two_lines():
     assert make_title("학습코칭 선택한 이유").text == "학습코칭\n선택한 이유"
+
+
+# --- 0 은 "제한 없음" ------------------------------------------------------------
+#
+# CLI 는 `--title-max-chars` 기본값으로 0 을 준다. 그걸 글자 수 예산 0 으로
+# 읽으면 2행이 통째로 잘려, 제목이 조용히 한 줄짜리가 된다. 색도 크기도
+# 둘로 갈리지 않으니 썸네일이 통째로 무너진다.
+
+
+def test_zero_max_chars_keeps_the_second_line():
+    from capcut_agent.title import make_title
+
+    title = make_title("자막이 자꾸 밀리는 진짜 이유", "red", 0)
+
+    assert title.line1, "1행이 비었습니다"
+    assert title.line2, "2행이 사라졌습니다 — 0 을 예산 0 으로 읽었습니다"
+    assert "\n" in title.text
+
+
+def test_a_real_budget_still_trims():
+    from capcut_agent.title import make_title
+
+    tight = make_title("자막이 자꾸 밀리는 진짜 이유", "red", 8)
+    assert len(tight.line1) + len(tight.line2) <= 8
+
+
+def test_negative_is_also_no_limit():
+    from capcut_agent.title import make_title
+
+    assert make_title("자막이 자꾸 밀리는 진짜 이유", "red", -1).line2

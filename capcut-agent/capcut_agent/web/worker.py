@@ -45,12 +45,15 @@ def build_command(job, workspace: Path, draft_dir: str | None = None) -> list[st
         pairs = (
             ("--motion", "motion"), ("--font-size", "fontSize"),
             ("--subtitle-y", "speechY"), ("--anchor", "anchor"),
+            ("--title-layout", "titleLayout"),
+            ("--title-palette", "titlePalette"),
             ("--language", "language"),
         )
         if options.get("srt", True):
             command.append("--srt")
         if options.get("noTitle"):
-            command.append("--no-subtitle")
+            # 제목을 끄랬더니 자막을 끄고 있었다. 뜻이 전혀 다르다.
+            command.append("--no-title")
     else:
         command = base + ["caption", job.source, "--json"]
         if options.get("cut", True):
