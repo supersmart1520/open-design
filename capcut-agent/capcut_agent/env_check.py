@@ -152,7 +152,11 @@ def run_checks(workspace: Workspace | None = None) -> Report:
 
 
 def format_report(report: Report) -> str:
+    from .build import describe as build_describe
+
     lines = [
+        # 첫 줄에 둔다. "기능이 안 된다" 는 말의 절반은 옛 코드가 도는 것이다.
+        f"버전      : {build_describe()}",
         f"OS        : {report.system} {report.machine}",
         f"트랙      : {report.track} — {report.track_label}",
         f"ASR       : {report.asr_backend}",

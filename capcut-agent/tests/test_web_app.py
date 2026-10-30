@@ -378,3 +378,19 @@ def test_a_failed_send_does_not_sit_in_uploading(client, monkeypatch):
     assert client.post(f"/api/jobs/{job.id}/send").status_code == 500
     assert client.store.get(job.id).status == "failed"
     assert "거절" in client.store.get(job.id).error
+
+
+# --- 어느 코드가 돌고 있나 -------------------------------------------------------
+#
+# "기능이 안 된다" 는 말의 절반은 옛 코드가 도는 것이다. 고쳐 올려도 받지
+# 않았거나 앱을 다시 띄우지 않으면 겉모습이 똑같다.
+
+
+def test_the_page_is_never_cached(client):
+    # 브라우저가 옛 화면을 그대로 쓰면 받았는지 알 길이 없다.
+    assert client.get("/").headers["cache-control"] == "no-store"
+
+
+def test_status_says_which_build_is_running(client):
+    build = client.get("/api/status").json()["build"]
+    assert build.startswith("v")

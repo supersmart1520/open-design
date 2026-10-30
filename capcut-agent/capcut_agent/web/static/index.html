@@ -102,6 +102,7 @@
     <span class="dot" id="live"></span>
     <h1>캡컷 에이전트</h1>
     <span class="meta" id="track">…</span>
+    <span class="meta" id="build"></span>
   </header>
 
   <hr>
@@ -354,6 +355,7 @@ async function refresh() {
     api("/api/status"), api("/api/jobs"),
   ]);
   $("track").textContent = `${status.trackLabel} · ASR ${status.asr}`;
+  $("build").textContent = status.build || "";
   $("inbox").textContent = status.workspace.inbox;
   showKey(status.apiKey);
   showDrive(status.drive);

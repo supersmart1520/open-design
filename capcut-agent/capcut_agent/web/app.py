@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 from .. import storage
+from ..build import describe
 from ..env_check import format_report, run_checks
 from ..llm import load_key, masked, save_key
 from .. import drive as drive_api
@@ -109,7 +110,10 @@ def create_app(workspace_path: str | Path | None = None,
 
     @app.get("/")
     def index() -> FileResponse:
-        return FileResponse(STATIC / "index.html")
+        # 캐시를 막는다. 고친 걸 올려도 브라우저가 옛 화면을 그대로 쓰면,
+        # 받았는지 안 받았는지 알 길이 없다.
+        return FileResponse(STATIC / "index.html",
+                            headers={"cache-control": "no-store"})
 
     # ------------------------------------------------------------- API
 
@@ -118,6 +122,7 @@ def create_app(workspace_path: str | Path | None = None,
         report = run_checks(workspace)
         return {
             "ok": report.ok,
+            "build": describe(),
             "track": report.track,
             "trackLabel": report.track_label,
             "asr": report.asr_backend,
